@@ -1,0 +1,141 @@
+# =============================================================================
+# Update-SessionKeys.ps1 - put today's ICICI Breeze session key into every engine at once.
+#   VAJRA 2.0   D:\ClaudePinRiskImproved\vajra\credentials.py   SESSION_KEY = "..."
+#   MYTHOS 2.0  D:\ClaudeCodeImproved\mythos\credentials.py      SESSION_KEY = "..."
+#   ApexOptions D:\ApexOptions\secrets\breeze.json               "session_token": "..."
+#   TRINETRA    D:\SensexOptions\secrets\breeze.json             "session_token": "..."
+# All four use the same ICICI API account, so one session key serves all of them.
+#
+# Accepts the bare key (57384442) or the whole redirect URL (...?apisession=57384442).
+# Only the session key line is changed; API key / secret are never touched or printed.
+# A one-step backup of each file is kept as <file>.prev. ASCII-only (PowerShell 5.1 safe).
+# =============================================================================
+param([string]$Key = "", [switch]$NoTest)
+
+$ErrorActionPreference = "Stop"
+
+# ---- targets (edit here if a folder moves) -----------------------------------
+$Targets = @(
+    @{ Name = "VAJRA 2.0";   Path = "D:\ClaudePinRiskImproved\vajra\credentials.py"; Kind = "py"   },
+    @{ Name = "MYTHOS 2.0";  Path = "D:\ClaudeCodeImproved\mythos\credentials.py";   Kind = "py"   },
+    @{ Name = "ApexOptions"; Path = "D:\ApexOptions\secrets\breeze.json";             Kind = "json" },
+    @{ Name = "TRINETRA";    Path = "D:\SensexOptions\secrets\breeze.json";           Kind = "json" }
+)
+# Files that would silently OVERRIDE credentials.py if they hold an old key: updated too when present.
+$Overrides = @(
+    @{ Name = "VAJRA 2.0 .token"; Path = "D:\ClaudePinRiskImproved\vajra\.token"; Kind = "raw" }
+)
+
+$Utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+function Mask([string]$s) { if ($s.Length -le 2) { return "**" } return ("*" * ($s.Length - 2)) + $s.Substring($s.Length - 2) }
+
+Write-Host ""
+Write-Host "  Breeze session key updater  (VAJRA 2.0 / MYTHOS 2.0 / ApexOptions / TRINETRA)" -ForegroundColor Yellow
+Write-Host "  ------------------------------------------------------------------------------"
+
+# ---- get the key -------------------------------------------------------------
+if ($Key -eq "") {
+    Write-Host "  Paste today's session key, or the whole redirect URL, then press Enter:"
+    $Key = Read-Host "  key"
+}
+$Key = $Key.Trim().Trim('"').Trim("'")
+$m = [regex]::Match($Key, 'apisession=([0-9A-Za-z]+)')
+if ($m.Success) { $Key = $m.Groups[1].Value }
+if ($Key -notmatch '^[0-9]{6,12}$') {
+    Write-Host "  That does not look like a Breeze session key (expected 6-12 digits). Nothing changed." -ForegroundColor Red
+    Read-Host "  Press Enter to close"; exit 1
+}
+Write-Host ("  key: " + (Mask $Key) + "  (" + $Key.Length + " digits)")
+Write-Host ""
+
+# ---- refuse to touch anything if an engine is running -----------------------
+$running = @()
+try {
+    $running = @(Get-CimInstance Win32_Process -Filter "Name='python.exe' OR Name='pythonw.exe'" -ErrorAction Stop |
+        Where-Object { $_.CommandLine -match 'vajra\.app|run_mythos|run_apex|run_trinetra' })
+} catch { }
+if ($running.Count -gt 0) {
+    Write-Host "  NOTE: an engine is running right now (it keeps the key it started with)." -ForegroundColor Yellow
+    Write-Host "        The files will be updated; restart that engine to use the new key."
+    Write-Host ""
+}
+
+# ---- update each file --------------------------------------------------------
+function Update-One($t) {
+    $p = $t.Path
+    if (-not (Test-Path -LiteralPath $p)) { return @("MISSING", "file not found") }
+    $text = [System.IO.File]::ReadAllText($p)
+    switch ($t.Kind) {
+        "py"   { $rx = '(?m)^(\s*SESSION_KEY\s*=\s*)(["''])[^"''\r\n]*(["''])'; $new = '${1}"' + $Key + '"' }
+        "json" { $rx = '("session_token"\s*:\s*)"[^"]*"';                       $new = '${1}"' + $Key + '"' }
+        "raw"  { $rx = '(?s)^.*$';                                              $new = $Key }
+    }
+    if (-not [regex]::IsMatch($text, $rx)) { return @("FAILED", "key line not found - file left unchanged") }
+    $updated = [regex]::Replace($text, $rx, $new, 1)
+    if ($t.Kind -eq "raw") { $updated = $Key + "`r`n" }
+    if ($updated -eq $text) { return @("SAME", "already had this key") }
+    Copy-Item -LiteralPath $p -Destination ($p + ".prev") -Force
+    [System.IO.File]::WriteAllText($p, $updated, $Utf8NoBom)
+    # verify by reading it back
+    $check = [System.IO.File]::ReadAllText($p)
+    if ($t.Kind -eq "json") {
+        try { $j = $check | ConvertFrom-Json } catch { Copy-Item -LiteralPath ($p + ".prev") -Destination $p -Force; return @("FAILED", "JSON broke - restored the previous file") }
+        if ($j.session_token -ne $Key) { return @("FAILED", "read-back mismatch") }
+    } elseif (-not $check.Contains($Key)) { return @("FAILED", "read-back mismatch") }
+    return @("UPDATED", "")
+}
+
+$ok = $true
+foreach ($t in ($Targets + $Overrides)) {
+    if ($Overrides -contains $t -and -not (Test-Path -LiteralPath $t.Path)) { continue }   # override file absent: nothing to do
+    $r = Update-One $t
+    $color = @{ UPDATED = "Green"; SAME = "Green"; MISSING = "Yellow"; FAILED = "Red" }[$r[0]]
+    Write-Host ("  {0,-8} {1,-17} {2}" -f $r[0], $t.Name, $t.Path) -ForegroundColor $color
+    if ($r[1]) { Write-Host ("           " + $r[1]) -ForegroundColor $color }
+    if ($r[0] -eq "FAILED" -or $r[0] -eq "MISSING") { $ok = $false }
+}
+
+# MYTHOS / VAJRA env override would beat the files: warn
+if ($env:VAJRA_SESSION_KEY) { Write-Host "  WARNING: environment variable VAJRA_SESSION_KEY is set and overrides VAJRA's file." -ForegroundColor Yellow }
+
+# ---- optional: prove the key works with ICICI (one login, ~10 s) -------------
+if (-not $NoTest -and $ok) {
+    Write-Host ""
+    $ans = Read-Host "  Test the key against ICICI now? (Y/n)"
+    if ($ans -eq "" -or $ans -match '^[Yy]') {
+        $py = @'
+import json, sys
+try:
+    from breeze_connect import BreezeConnect
+except Exception as e:
+    print("  TEST SKIPPED: breeze_connect not importable (%s)" % type(e).__name__); sys.exit(2)
+c = json.load(open(r"D:\ApexOptions\secrets\breeze.json", encoding="utf-8"))
+try:
+    b = BreezeConnect(api_key=c["api_key"])
+    b.generate_session(api_secret=c["api_secret"], session_token=c["session_token"])
+    print("  TEST PASSED: ICICI accepted the session key.")   # generate_session raises on a bad key
+    sys.exit(0)
+except Exception as e:
+    msg = str(e)
+    for k in (c.get("api_key", ""), c.get("api_secret", ""), c.get("session_token", "")):
+        if k: msg = msg.replace(k, "***")
+    print("  TEST FAILED: " + msg[:200]); sys.exit(1)
+'@
+        $tmp = Join-Path $env:TEMP "breeze_key_test.py"
+        [System.IO.File]::WriteAllText($tmp, $py, $Utf8NoBom)
+        try { & python $tmp; $code = $LASTEXITCODE } catch { Write-Host "  TEST SKIPPED: python not found on PATH"; $code = 2 }
+        Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue
+        if ($code -eq 1) { $ok = $false; Write-Host "  -> The key was written, but ICICI rejected it: generate a fresh one and run this again." -ForegroundColor Red }
+    }
+}
+
+# ---- log (no secrets) --------------------------------------------------------
+try {
+    $log = Join-Path $PSScriptRoot "session_key_updates.log"
+    Add-Content -LiteralPath $log -Value ("{0}  key {1}  {2}" -f (Get-Date -Format "yyyy-MM-dd HH:mm:ss"), (Mask $Key), ($(if ($ok) { "OK" } else { "PROBLEM" })))
+} catch {}
+
+Write-Host ""
+if ($ok) { Write-Host "  All done. Start the engines as usual." -ForegroundColor Green }
+else     { Write-Host "  Something needs attention (see above)." -ForegroundColor Red }
+Read-Host "  Press Enter to close"

@@ -1,0 +1,18 @@
+# VAJRA — Cross-Instrument Pin-Risk / Gamma-Explosion Engine
+# Python 3.11+ (developed/tested on 3.13)
+
+# --- Core compute / tape ---
+pyarrow>=15.0.0            # parquet tapes (the replayable columnar substrate, §9)
+numpy>=1.26.0
+PyYAML>=6.0.1             # vajra_config.yaml (§12)
+python-dateutil>=2.9.0    # expiry / holiday date math (§4.3)
+
+# --- Live data + orders (ICICI Direct BreezeConnect, §4 / §7) ---
+breeze-connect>=1.0.59    # the real broker SDK; live session + websocket + orders
+
+# --- Dashboard / status API (localhost, port from config; NOT 8765) ---
+fastapi>=0.110.0
+uvicorn[standard]>=0.29.0
+
+# --- tests only ---
+httpx>=0.27                # starlette TestClient (pytest) — not needed to run live

@@ -1,0 +1,393 @@
+# =============================================================================
+# VAJRA 2.0 — Cross-Instrument Pin-Risk / Gamma-Explosion Engine
+# Single source of truth (spec §12). Defaults below are the spec defaults verbatim;
+# anything added beyond §12 is grouped under clearly-labelled sections.
+# =============================================================================
+
+schema_version: "2.0.0"
+
+# --- §3 Universe -------------------------------------------------------------
+universe:
+  # ALL constituents shown across the three NSE factsheets (operator-extended from
+  # the spec's default 10 to every stock in the PDFs = 20 unique + TCS). Tracking is
+  # universe-wide; execution stays NIFTY-only. (operator-locked)
+  indices: [NIFTY, BANKNIFTY, FINNIFTY]
+  stocks:  [HDFCBANK, ICICIBANK, RELIANCE, BHARTIARTL, LT, INFY, TCS, SBIN, AXISBANK, KOTAKBANK, ITC,
+            FEDERALBNK, INDUSINDBK, AUBANK, BANKBARODA, IDFCFIRSTB,
+            BAJFINANCE, BSE, SHRIRAMFIN, BAJAJFINSV, SBILIFE]
+  refresh_weights_from: nifty_weights.csv        # updated on rebalance; NOT hard-coded (§3)
+  # Index betas vs NIFTY (1Y) — sourced from NSE factsheets 2026-05-29; informational/context.
+  index_beta:
+    NIFTY: 1.00
+    BANKNIFTY: 1.13
+    FINNIFTY: 1.18
+
+# --- §4.1 Chain --------------------------------------------------------------
+chain:
+  strikes_each_side: 6                            # ATM ± N strikes (CE & PE)
+  nifty_prefetch_each_side: 14                    # 2.0.3: NIFTY options subscribed ATM ± 14 up front (data only;
+                                                  # Breeze may refuse new subscriptions mid-day, 21 Oct)
+
+# --- §5.1/§5.3 Strike steps (NIFTY=50; others resolved from the live chain) --
+strike_step:
+  NIFTY: 50
+  BANKNIFTY: 100
+  FINNIFTY: 50
+  # VAJRA 2.0: measured near-ATM steps (team finding 28, from the 10-14/15/16 chains). 1.x inferred
+  # them at runtime and 8 of 17 "corrections" in 3 days were WRONG (step doubled -> 2-ITM bands).
+  # A listed step is never auto-changed; refresh this table if NSE changes a stock's strike grid.
+  HDFCBANK: 10
+  ICICIBANK: 10
+  RELIANCE: 10
+  SBIN: 10
+  AXISBANK: 10
+  BAJFINANCE: 10
+  KOTAKBANK: 5
+  ITC: 5
+  INFY: 20
+  TCS: 20
+  BHARTIARTL: 20
+  LT: 50
+  # measured true grids for the BANK/FIN-only names (team finding 28; runtime auto-"correction" got these wrong)
+  AUBANK: 20
+  SBILIFE: 20
+  INDUSINDBK: 10
+  # 2.0.1 (teardown T20/T14): the last four, measured from the 15 Oct chains. Unlisted names were
+  # resolved by a blocking REST retry inside the round loop every 90 s (1 s round stalls).
+  IDFCFIRSTB: 1
+  BSE: 50
+  SHRIRAMFIN: 20
+  BAJAJFINSV: 20
+  FEDERALBNK: 5
+  BANKBARODA: 5
+  resolve_from_chain: true                        # only for a stock NOT listed above (none in the shipped universe)
+
+# --- §5.5 Basis monitor ------------------------------------------------------
+basis:
+  ewma_halflife_min: 5
+  abrupt_k: 2.5
+  noise_floor_pts: 1.0
+  signal_weight_decay: { full_until: "12:30", near_zero_after: "14:00" }
+  # §5.5 time-weighting applied behaviorally: an ABRUPT basis move only triggers
+  # the reversal-watch freeze while basis_signal_weight(t) >= this floor. The
+  # decaying weight drops below 0.5 ~13:15, so late convergence-driven abrupts do
+  # not freeze entries (basis is near-useless near the close).
+  reversal_weight_floor: 0.5
+  # 2.0 event hygiene (team findings 04/25): REVERSAL_WATCH fired 1,351 / 821 times a day on a
+  # bias of ~0.03. It now needs a real bias and is emitted at most once per refractory window.
+  reversal_min_bias: 0.125
+  reversal_refractory_secs: 300
+
+# --- §5.3 Trigger band -------------------------------------------------------
+trigger:
+  pad_floor: 0.10
+  level_round_step: 5
+  itm_depth_strikes: 1
+
+# --- Entry timing (operator rule: ANTICIPATE the breach) ---------------------
+# Fire when NIFTY spot comes within proximity_pts of a HELD upper/lower level, in
+# that direction (approaching upper -> CE, approaching lower -> PE) — BEFORE it
+# breaches, to buy the option cheap ahead of the gamma explosion. Enter on EVERY
+# such approach; the cross-instrument confluence is screamed + logged, not gated.
+entry:
+  proximity_pts: 7
+  # NOTE: there is NO opposite-side veto. We enter on EVERY approach (operator rule);
+  # the opposite-side pull is only SCREAMED + LOGGED via the confluence verdict.
+  strong_pull: 0.35               # weighted same-side pull at/above which the confluence reads STRONG (§5.6, display)
+
+# --- §5.4 Freshness / recalc (FIXED 20-min interval — operator rule) ---------
+# Pre-open: levels SEEDED from the prev-day close. First intraday recompute at calc_start
+# (09:20), then re-anchor every hold_min_secs (20 min); held in between, plus a recompute
+# after every exit AND after each cooldown window ends. (The earlier consolidation/flat-
+# detection model was replaced; interval moved 30->20 min by operator decision.)
+freshness:
+  hold_min_secs: 1200             # NIFTY (execution instrument): recompute U/L at 09:20, then every 20 minutes
+  # Sisters/stocks re-anchor on a SHORTER cadence so their pin-risk levels stay current for the
+  # cross-instrument confluence/lean — a breach against a stale sister level is not predictive.
+  # Operator rule: "not noisy but very predictive" -> 3 min (stable enough to mean something, fresh
+  # enough to anticipate). NIFTY keeps the 20-min rule above (its level drives trades).
+  sister_hold_min_secs: 180       # non-NIFTY re-anchor interval = 3 min (operator-locked)
+  hold_while_in_trade: "off"      # off = 1.0 behaviour (operator rule: NIFTY re-anchors every 20 min, trade open or not).
+                                  # "on" would skip the interval re-anchor while a trade is open (PROPOSAL, not approved).
+  retry_secs: 30                  # while a re-anchor keeps FAILING (feed gap), retry on this short cadence (not every round, not the full interval)
+  linger_band_pct: 0.05           # proximity band for the per-instrument APPROACH state (§5.7)
+
+# --- §5.6 Decision-maker -----------------------------------------------------
+decision:
+  w_self: 1.0
+  w_bloc: 0.35
+  bias_ewma_halflife_min: 3
+  # NOTE (spec §12): the two thresholds below are marked <calibrate_on_tape>.
+  # They are PROVISIONAL placeholders so the engine can run and record tape.
+  # They are NOT silently hard-coded inside the engine — the engine reads them
+  # from here, writes a THRESHOLDS_PROVISIONAL event into event_tape at startup
+  # (with the values + thresholds_calibrated flag), and the active threshold is
+  # carried on every decision_tape row's `bias_threshold` column. Operator sets
+  # the real values from replay.py analysis of recorded tape, then flips
+  # thresholds_calibrated: true (which suppresses the provisional event).
+  bias_threshold: 0.25            # PROVISIONAL — calibrate on recorded tape
+  bias_threshold_lead: 0.55       # PROVISIONAL, higher — calibrate on recorded tape
+  thresholds_calibrated: false
+  divergence_penalty: 0.5
+  reversal_cooldown_min: 2
+
+# --- §5.7 Breach + continuation ---------------------------------------------
+continuation:
+  break_buffer_pct: 0.03
+  confirm_secs: 120
+  confirm_points_pct: 0.10
+  confirm_vol_mult: 1.2
+  vol_window: 10                  # rolling-volume window for the per-instrument activity ratio
+  false_break_refractory_secs: 60 # 2.0: at most one NIFTY FALSE_BREAK event per minute (was 12 in 23 s)
+
+# --- §6 Routing --------------------------------------------------------------
+routing:
+  routing_mode: CONFIRM           # CONFIRM | LEAD
+  # Operator override of the spec default 'observe': the paper engine must generate
+  # trade decisions EVERY session (never sit silent on non-expiry days). 'trade_small'
+  # = trade non-expiry days too (the name is historical: sizing is ALWAYS all-in, operator-locked).
+  # Set 'off' only to fully mute.
+  nonexpiry_mode: trade_small     # observe | trade_small | off   (trade_small = trade non-expiry days; sizing is ALWAYS all-in — operator-locked)
+
+# --- VAJRA 2.0: NON-EXPIRY regime (new; expiry day is untouched) -------------
+# Why: off expiry the 1-ITM option carries 70-130 pts of time value, so the 1.x band sat 90-135
+# pts from spot and NIFTY touched it ~once in three sessions. The MTM band below asks "at what
+# spot would the ITM writers be `mtm_pad` underwater on their VWAP *right now*?" — the same rule
+# as expiry day evaluated at today's clock (it equals the 1.x formula when time value is zero).
+nonexpiry:
+  band_method: mtm                # mtm | legacy (legacy = 1.x behaviour off expiry)
+  mtm_pad: 0.20                   # writers 20% underwater on the ITM VWAP
+  mtm_floor_pts: 25               # a level is never closer than 25 pts to spot at anchor time
+  mtm_delta_fallback: 0.65        # used when neighbour strikes are missing for the finite-difference delta
+  max_half_width_pts: 0           # optional hard cap on distance from spot (0 = off). Levels only ever NARROW vs 1.x.
+  # Sizing is ALL-IN on every trade (capital + running P&L), and there is NO daily trade cap and NO
+  # daily loss stop — operator-locked: full-capital compounding is how this engine is evaluated.
+
+# --- VAJRA 2.0: NIFTY feed sanity (new) ----------------------------------------
+# The Breeze cash feed froze 15:15-15:20 on all three recorded days and then printed garbage
+# (spot +185/+240/-134 pts in one tick). While the gate is closed: no new entries, no level
+# re-anchors; open positions are still managed. Thresholds from the clean-session tapes.
+feed_sanity:
+  enabled: "on"
+  frozen_spot_secs: 25            # spot unchanged this long (benign max seen: 16 s; 15 s false-tripped)
+  max_abs_basis_pts: 150          # 2.0.5: HARD ceiling only. 23 Oct 2026 the real NIFTY basis was 46-66 pts ALL day
+                                  # (future AND option parity agreed, index tracked the future) and the old 40-pt
+                                  # limit kept the gate closed from 09:20. Garbage is caught by the jump test and
+                                  # the relative test below (basis vs its own learned level), and from 15:15 the
+                                  # closing-session spot proxy replaces the index.
+  rel_basis_pts: 20               # ...or this far off its own normal level (10-min EWMA, clean rounds)
+  rel_basis_hold_secs: 2          #    for at least this long (catches garbage hiding under 40 pts)
+  max_jump_pts: 40                # one-round spot jump above this (when no implied future is available)
+  jump_divergence_pts: 25         # a spot print > 20 pts that the option-implied future did NOT follow by
+                                  # this much is garbage (clean rounds: <= 15.8 apart; real moves move both)
+  recovery_secs: 60               # closed this long after a frozen / implausible fault
+  jump_recovery_secs: 2           # ...and this long after a pure jump fault
+
+# --- VAJRA 2.0: alert sounds (new) -------------------------------------------
+# The ENGINE decides when a sound is due; the dashboard only plays it. Five cues exist; sister /
+# stock breaches never make a sound. Set any kind to "off" to silence it.
+sounds:
+  entry: "on"                     # a paper trade was entered
+  exit_profit: "on"               # a trade closed green
+  exit_loss: "on"                 # a trade closed red
+  approach: "on"                  # NIFTY came within approach_warn_pts of a level (once per episode, early warning)
+  approach_warn_pts: 15           # rings BEFORE the 7-pt entry (2.0.1: it used to ring in the same ms as the entry)
+  feed_alarm: "on"                # NIFTY feed frozen / implausible (once per fault episode)
+  approach_cooldown_secs: 120
+  feed_alarm_cooldown_secs: 300
+  global_min_gap_secs: 3
+  approach_rearm_pts: 8           # spot must back off proximity+8 pts before the approach cue can ring again
+  imminent_secs: 10               # 2.0.2: "entry possible" cue this many seconds before a cooldown ends, if NIFTY is at the level
+  armed: "on"                     # 2.0.2: "Round one... Fight!" at the first calculated round (09:20) = daily sound check (armed.mp3)
+  sound_watch: "on"               # 2.0.2: console warning when no dashboard has been able to play sound for 30 s
+                                  #        (the engine itself never makes a sound; only the dashboard plays the MP3s)
+
+# --- §7 Execution ------------------------------------------------------------
+execution:
+  strikes: ATM_or_1ITM
+  # VAJRA is a PAPER engine: it ALWAYS takes its trades into the tape/logs (order_tape)
+  # so the human operator can act on them. LIVE_ORDERS is ONLY the gate for ALSO routing
+  # those orders to ICICI Breeze — it stays false because the human executes on ICICI
+  # manually. Turning this on is NOT part of normal operation; paper trading is never off.
+  LIVE_ORDERS: false
+  lot_size: 65                    # NIFTY lot = 65 quantity (broker-confirmed, matches MYTHOS)
+  starting_capital: 100000        # Rs 1,00,000; resets each trading day
+  deploy_full_capital: true       # enter EVERY trade with ALL capital in hand: lots = capital/(premium*65)
+  # Exit = trailing stop that books a MINIMUM profit then ratchets up to capture the max (§7).
+  min_profit_pct: 0.07            # book at least 7% of the entry premium (operator rule)
+  trail_activate_pct: 0.10        # the +7% floor arms once the peak reaches entry +10% (operator rule)
+  # Give-back: FLAT 6% (operator decision 2026-07-02, from the 06-30 tape sweep). The adaptive
+  # 12/9/6 tiers were tried (2026-07-01) and REVERTED: on the only binding live expiry tape the
+  # wide tier rode +15-20% peaks back to nothing — flat 6% beat it in every matched pairing
+  # (engine-true replays: flat Rs 3.9-4.1L vs adaptive Rs 2.9-3.1L). The tier MECHANISM stays in
+  # execution.py (all three values equal = flat behavior) so tiers can be re-tuned from config
+  # if more live tape ever justifies it.
+  trail_give_pct_wide: 0.06
+  trail_give_pct_mid: 0.06
+  trail_give_pct: 0.06            # trail 6% below the running peak
+  trail_extend_mid_pct: 0.20      # tier boundaries (inert while all three give values are equal)
+  trail_extend_tight_pct: 0.35
+  hard_sl_pct: 0.12               # hard stop: exit if premium falls 12% below entry (only exit before the trail arms)
+  # Minimum entry premium (operator rule): do NOT trade if the ATM option is too THIN.
+  min_premium_nonexpiry: 45       # non-expiry day: skip the entry if premium < 45
+  min_premium_expiry: 30          # expiry day: skip the entry if premium < 30
+  # Post-stop COOLDOWN (operator rule): after a hard-stop (SL_HIT) loss, take NO new trade for this
+  # many seconds. Breaks the same-strike re-entry death-spiral (a stop then an instant re-buy of the
+  # same level while spot has not moved). Deliberately relaxes the "enter on EVERY approach" rule.
+  post_stop_cooldown_secs: 660    # 11 minutes (operator-chosen) — after a hard-stop (SL_HIT) loss
+  # After a PROFITABLE exit, also wait this long before the next trade — SILENTLY (no event/banner).
+  # Fresh levels are recomputed right after the profit AND again when this window ends.
+  # 120s -> 15s (operator decision 2026-07-02, from the 06-30 sweep): 15s skips the same-second
+  # re-buy of the pop you just profited from, but is short enough to catch the trend's next leg —
+  # it beat BOTH 0s and 120s on both level intervals (engine-true replays: Rs 6.3L / 5.2L at 15s
+  # vs 3.9L / 4.1L at 0s vs 0.98L / 2.1L at 120s).
+  post_profit_cooldown_secs: 15
+  default_qty_lots: 1             # fallback only if full-capital sizing is unavailable
+  flatten_before: "15:38"         # 2.0.4: superseded by closing_session.flatten_before (kept in sync)
+  strike_from: current_atm        # current_atm = ATM at the moment of entry (2.0). anchor_atm = ATM when the
+                                  # levels were last set, up to 20 min old (1.0 behaviour). OPERATOR DECISION.
+  last_entry: "15:29"             # 2.0.4: superseded by closing_session.last_entry (kept in sync)
+  caution_after: "14:30"          # raise slippage/liquidity caution late session (§8.3)
+
+# --- §4.3 Expiry mapping + holiday calendar ---------------------------------
+expiry:
+  weekly_weekday: TUE             # NIFTY weekly options & futures expire Tuesday (§4.3)
+  shift_if_holiday_to: prev_trading_day   # Tuesday holiday -> Monday (the day before)
+  session_open: "09:15"
+  session_close: "15:40"          # 2.0.4 fallback only -- the engine runs to closing_session (F&O close)
+  calc_start: "09:20"             # first INTRADAY recompute at 09:20 (pre-open levels are seeded from prev-day close)
+  trade_start: "09:21"            # do NOT take a trade before this (operator rule; moved 09:30 -> 09:21)
+  # NSE trading holidays 2026 — VERIFIED 2026-07-02 against two independent published sources of the
+  # official NSE circular (both agree on all 15 weekday closures). Weekend-falling holidays
+  # (Mahashivratri Feb-15 Sun, Id-Ul-Fitr Mar-21 Sat, Independence Day Aug-15 Sat, Diwali Laxmi
+  # Pujan Nov-8 Sun w/ Muhurat session) are omitted — the calendar already excludes weekends.
+  # NOTE the FIVE Tuesday holidays: each shifts that week's NIFTY expiry to Monday (and Mar-31
+  # shifts the MARCH MONTHLY, since it is the last Tuesday of March).
+  holidays_verified: true
+  holidays_2026:
+    - 2026-01-15   # Maharashtra municipal elections (special; past)
+    - 2026-01-26   # Republic Day
+    - 2026-03-03   # Holi
+    - 2026-03-26   # Shri Ram Navami
+    - 2026-03-31   # Shri Mahavir Jayanti  (TUESDAY -> shifts weekly + the March MONTHLY expiry)
+    - 2026-04-03   # Good Friday
+    - 2026-04-14   # Dr. Ambedkar Jayanti  (TUESDAY -> shifts weekly expiry)
+    - 2026-05-01   # Maharashtra Day
+    - 2026-05-28   # Bakri Id
+    - 2026-06-26   # Muharram
+    - 2026-09-14   # Ganesh Chaturthi
+    - 2026-10-02   # Mahatma Gandhi Jayanti
+    - 2026-10-20   # Dussehra              (TUESDAY -> shifts weekly expiry)
+    - 2026-11-10   # Diwali Balipratipada  (TUESDAY -> shifts weekly expiry)
+    - 2026-11-24   # Guru Nanak Gurpurb    (TUESDAY -> shifts weekly expiry)
+    - 2026-12-25   # Christmas
+
+# --- §9 Tape -----------------------------------------------------------------
+tape:
+  raw_ticks: "on"                 # 2.0.1: record every broker websocket tick to raw_ticks.parquet (EOD forensics)
+  root_dir: tapes                 # partitioned by trade date: tapes/<YYYY-MM-DD>/<tape>.parquet
+  format: parquet                 # parquet preferred; event_tape is jsonl (§9.7)
+  flush_interval_secs: 5          # columnar flush cadence (jsonl sidecar is written immediately)
+  # 2.1 (2 Nov 2026: a killed session left EVERY parquet tape unreadable -- no footer): the parquet is
+  # written as closed PART files, one per rotate_secs, merged into <tape>.parquet at a clean close
+  # (or at the next start). A hard kill loses at most rotate_secs of rows.
+  rotate_secs: 60
+  # jsonl sidecars: "small" = decision/order/signal only (default; the tick/level/basis sidecars were
+  # ~9 GB/day), "all" = every parquet tape (2.0 behaviour), "none".
+  sidecar_jsonl: small
+  compression: zstd               # parquet codec (zstd ~2x smaller than the 2.0 snappy files)
+
+# --- Feed (§4) ---------------------------------------------------------------
+feed:
+  mode: live                      # live | replay | synthetic | real
+  closing_session_start: "15:15"  # 2.0.3 fallback only -- 2.0.4 takes it from closing_session.schedule
+  # 'real' replays a REAL recorded MYTHOS session (vajra/data/real_session_<date>.jsonl).
+  real_round_stride: 2            # use every Nth recorded frame (1 = full ~10s cadence)
+  real_session_date: "2026-06-16" # which recorded day to replay (override with --date)
+  poll_interval_secs: 0.25        # engine round cadence (4x/sec) — fast live refresh + tighter stops
+  vix_decimal_shift_fix: true     # inherited Breeze fix: 0.25 -> 25.0 (×100) normalization (§0.7)
+  # 2.1 websocket supervision (2 Nov tape: 5 silences, 4 failed reconnects, each one blocking the engine
+  # 3-5.5 s). No tick at all for ws_silent_secs in market hours -> FEED_GAP + a reconnect REQUEST; the
+  # reconnect runs on the broker wrapper's own thread (never the engine's), re-joining every stream
+  # token in one packet. Re-requested every ws_reconnect_every_secs while the silence lasts.
+  ws_silent_secs: 20
+  ws_reconnect_every_secs: 30
+  sdk_reconnect_grace_secs: 10    # let the SDK's own reconnect finish before the socket is rebuilt
+  ws_keepalive_secs: 10           # 2.1.1: idempotent re-join every N s so the socket client's write loop never idles out (0 = off)
+  quote_stale_resub_secs: 45      # 2.1.1: a near-the-money option quote older than this is re-subscribed (its stream died quietly)
+
+# --- Server / dashboard (localhost; NOT 8765 — MYTHOS owns 8765) -------------
+server:
+  host: 127.0.0.1
+  port: 8766
+  enable: true
+
+# --- Broker session (BreezeConnect) -----------------------------------------
+# Secrets live in vajra/credentials.py (API_KEY / API_SECRET / SESSION_KEY) —
+# same mechanism as MYTHOS. NEVER put secrets in this yaml. The *_env keys below
+# are only a fallback used if the credentials.py constant is left blank.
+breeze:
+  api_key_env: BREEZE_API_KEY
+  api_secret_env: BREEZE_API_SECRET
+  session_token_env: BREEZE_SESSION_TOKEN
+  reconnect_max_retries: 5
+  reconnect_backoff_secs: 2
+  # 2.0: the daily SESSION_KEY can come from (highest first) --token, env VAJRA_SESSION_KEY,
+  # the git-ignored file vajra/.token (one line), then vajra/credentials.py.
+  # Heavyweight stock codes are resolved at runtime via breeze.get_names(), with
+  # these VERIFIED fallbacks (carried from MYTHOS's live scrip_cache.json, dated
+  # 2026-06) used if get_names is broken upstream. Refresh after a rebalance.
+  isec_override:
+    HDFCBANK: HDFBAN
+    ICICIBANK: ICIBAN
+    RELIANCE: RELIND
+    BHARTIARTL: BHAAIR
+    LT: LARTOU
+    INFY: INFTEC
+    SBIN: STABAN
+    AXISBANK: AXIBAN
+    KOTAKBANK: KOTMAH
+    ITC: ITC
+
+# --- 2.0.3 tape housekeeping --------------------------------------------------
+tapes:
+  drop_verified_jsonl: "on"       # at a clean close, delete tick/level/basis/decision .jsonl sidecars (~9 GB/day)
+                                  # ONLY when the .parquet reads back with exactly the same row count; the small
+                                  # jsonl tapes (event, order, round, client, signal) are always kept
+
+# --- 2.0.4: NSE Closing Auction Session (CAS) -------------------------------------------------
+# Researched 21 Oct 2026 (NSE circular 38/2026 CAS SOP; SEBI circular 15 Oct 2026) and checked on the
+# 19 + 21 Oct tapes:
+#  * since 3 Aug 2026: F&O stocks stop continuous trading at 15:15 and close by auction (matched ~15:35).
+#    The NIFTY index freezes at 15:15 and Breeze then streams the INDICATIVE auction close (+435 pts at
+#    15:20 on 21 Oct). Index options + futures trade continuously until 15:40.
+#  * non-expiry day: NIFTY options keep pricing off the FUTURE (parity within ~1 pt of the futures mid
+#    15:15-15:30), so from index_frozen_from the engine's spot = forward - median pre-15:15 basis.
+#  * expiry day: the EXPIRING options settle on the auction close, and from ~15:16 they follow the
+#    indicative close instead of the future (19 Oct: 22900 CE 15 -> 46 -> 0.1 in 10 min, future flat).
+#  * from 7 Dec 2026: auction 15:30-15:40, index F&O to 15:45, expiring index contracts stop at 15:30.
+closing_session:
+  last_entry: "15:29"             # OPERATOR 21 Oct 2026: entries until 15:29 ...
+  flatten_before: "15:38"         # ... and squared off by 15:40 (15:38 leaves 2 min for the exit to fill)
+  # OPERATOR 21 Oct 2026: expiry days behave the same (entries to 15:29, out by 15:38), knowing the
+  # expiring options follow the auction's indicative close after ~15:16 (see above).
+  expiry_day_last_entry: "15:29"
+  expiry_day_flatten_before: "15:38"
+  spot_proxy: "on"                # from index_frozen_from: NIFTY spot = forward - basis_ref (off = raw index)
+  basis_ref_window_mins: 5        # basis_ref = median (parity forward - index) over this window before the freeze
+  schedule:                       # market structure by date (the latest entry in force applies; no inheritance)
+    - from: "2000-01-01"          # before CAS (replays of old days keep the 1.x/2.0 15:25 rule)
+      index_frozen_from: "15:30"
+      fo_close: "15:30"
+      last_entry: "15:25"
+      flatten_before: "15:25"
+      expiry_day_last_entry: "15:25"
+      expiry_day_flatten_before: "15:25"
+    - from: "2026-08-03"          # CAS phase I (in force today)
+      index_frozen_from: "15:15"
+      fo_close: "15:40"
+    - from: "2026-12-07"          # SEBI 15 Oct 2026 circular -- PROVISIONAL, re-check NSE's circular before then
+      index_frozen_from: "15:30"  # index continuous until 15:30, auction 15:30-15:40
+      fo_close: "15:45"           # index F&O trade until 15:45 ...
+      expiry_day_fo_close: "15:30"   # ... but EXPIRING index contracts stop at 15:30 (VWAP 15:00-15:30 settles):
+                                     # the operator times are clamped to square-off 15:28, last entry 15:28

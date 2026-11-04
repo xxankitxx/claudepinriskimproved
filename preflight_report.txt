@@ -1,0 +1,92 @@
+VAJRA 2.0.1 PREFLIGHT  17-10-2026 19:50:25.76 
+folder: D:\ClaudePinRiskImproved 
+ 
+[1] python 
+Python 3.13.0
+C:\Users\Ankit Madhogaria\AppData\Local\Programs\Python\Python313\python.exe
+ 
+[2] packages 
+pyarrow 24.0.0 | numpy 2.4.3 | fastapi 0.136.3 | uvicorn 0.49.0 | breeze_connect OK
+pytest 9.1.0
+ 
+[3] files 
+credentials.py: present 
+tapes\2026-10-16: present 
+free bytes on D: 71784108032 
+ 
+[4] completion gate (verify_vajra.py) 
+[2mVAJRA 2.0 completion gate — verify_vajra.py[0m
+
+Gate 1 — no-stub scan
+  [32mPASS[0m no stubs / TODO / FIXME / NotImplementedError in reachable paths
+
+Gate 3 — formula golden tests
+  [32mPASS[0m round_to is ROUND_HALF_UP (82.5->85, 104.5->105)
+  [32mPASS[0m §5.1 IMPLIED future 24120, basis +10
+  [32mPASS[0m §5.3 premium band: upper 24125, lower 24035
+  [32mPASS[0m §5.3 discount mirror: upper 24145, lower 24055
+
+Gate 4 — expiry mapping
+  [32mPASS[0m holiday Tuesday 2026-09-01 weekly -> Monday 2026-08-31, IMPLIED
+  [32mPASS[0m monthly Tuesday 2026-09-29 holiday -> Monday 2026-09-28, ACTUAL
+  [32mPASS[0m clean monthly Tuesday -> ACTUAL; weekly -> IMPLIED
+
+Gate 2 — tape-emission proof  /  Gate 5 — determinism
+  [32mPASS[0m tick_tape: 3600 rows, exact columns + dtypes + schema_version + int64 ts
+  [32mPASS[0m level_tape: 3603 rows, exact columns + dtypes + schema_version + int64 ts
+  [32mPASS[0m basis_tape: 3600 rows, exact columns + dtypes + schema_version + int64 ts
+  [32mPASS[0m decision_tape: 150 rows, exact columns + dtypes + schema_version + int64 ts
+  [32mPASS[0m signal_tape: 4 rows, exact columns + dtypes + schema_version + int64 ts
+  [32mPASS[0m order_tape: 8 rows, exact columns + dtypes + schema_version + int64 ts
+  [32mPASS[0m event_tape.jsonl: keys ok, all types declared, types ['APPROACH_ALERT', 'EXPIRY_RESOLVED', 'REGIME', 'SHUTDOWN', 'SOUND', 'STARTUP_CONFIG', 'THRESHOLDS_PROVISIONAL']
+  [32mPASS[0m replay decision_tape byte-identical across 2 runs (378457 bytes)
+
+Gate 6 — default-on check
+  [32mPASS[0m no module disabled behind a default-off flag (LIVE_ORDERS / LEAD excepted)
+
+Gate 7 — non-expiry behaviour on real data (2026-10-15 fixture)
+  [32mPASS[0m 4 non-expiry entries on the trend morning (mtm band, all-in)
+  [32mPASS[0m no entry on the broken 15:15+ cash feed
+  [32mPASS[0m 15:15 frozen cash feed tripped the feed-sanity gate
+
+Summary:
+  [[32mPASS[0m] gate 1 no-stub
+  [[32mPASS[0m] gate 2 tapes
+  [[32mPASS[0m] gate 3 golden
+  [[32mPASS[0m] gate 4 expiry
+  [[32mPASS[0m] gate 5 determinism
+  [[32mPASS[0m] gate 6 default-on
+  [[32mPASS[0m] gate 7 non-expiry real
+
+[32mALL GATES PASS[0m
+verify exit code: 0 
+ 
+[5] test suite 
+........................................................................ [ 50%]
+..................................................s...................s  [100%]
+141 passed, 2 skipped in 65.71s (0:01:05)
+pytest exit code: 0 
+ 
+[6] launcher parse check 
+run_vajra.ps1 parse errors: 0
+ 
+[7] live smoke test (Breeze session + websocket + subscriptions, 60 s) 
+VAJRA 2.0 SMOKE | now 2026-10-17 19:52 IST | next session 2026-10-19 | expiry 2026-10-19 IMPLIED | EXPIRY DAY | market CLOSED | LIVE_ORDERS=False (paper)
+  vajra · session token from --token / env VAJRA_SESSION_KEY (length 8; value not shown)
+  OK   · Breeze session generated + websocket connected (5.9 s)
+  OK   · base subscriptions done (3.1 s): 49 subscribe calls (cash/futures for 24 instruments + VIX)
+  OK   · broker codes resolved for all 21 stocks
+  OK   · strike steps: 21 listed in the yaml
+  ...  · listening 60 s for ticks
+         10 s: 0 ticks (0 in the last 10 s)
+         20 s: 0 ticks (0 in the last 10 s)
+         30 s: 0 ticks (0 in the last 10 s)
+         40 s: 0 ticks (0 in the last 10 s)
+         50 s: 0 ticks (0 in the last 10 s)
+         60 s: 0 ticks (0 in the last 10 s)
+  ...  · symbols with a tick: {} · NIFTY spot None
+  OK   · 0 ticks is EXPECTED on a closed market. Session, websocket, codes and subscriptions all work.
+SMOKE PASSED — ready for the live session (use TODAY's token on the day).
+smoke exit code: 0 
+ 
+PREFLIGHT DONE 

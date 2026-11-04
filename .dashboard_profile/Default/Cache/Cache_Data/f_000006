@@ -1,0 +1,1164 @@
+<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>VAJRA 2.0</title>
+<style>
+  :root{--bg:#0a0e15;--panel:#121925;--panel2:#0d141e;--ink:#e8eef6;--mut:#8a98ab;
+        --up:#27d07a;--dn:#ef5552;--acc:#f5a623;--blue:#4aa3ff;--line:#1f2a39;--itm:#16202e;}
+  *{box-sizing:border-box} body{margin:0;background:var(--bg);color:var(--ink);
+    font:13px/1.4 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+  header{padding:11px 18px;border-bottom:1px solid var(--line);display:flex;align-items:center;
+    gap:11px;flex-wrap:wrap;background:var(--panel2)}
+  h1{font-size:17px;margin:0;letter-spacing:3px} .sub{color:var(--mut)} .sp{flex:1}
+  .pill{padding:2px 9px;border:1px solid var(--line);border-radius:11px;font-size:11.5px;color:var(--mut)}
+  .pill b{color:var(--ink)} .live-off{color:var(--up);border-color:#1c3a2a} .live-on{color:var(--dn)}
+  .today{font-size:13px} .today b{font-size:16px;color:var(--acc)}
+  .cap{font-size:13px;color:var(--mut)} .cap b{font-size:19px;color:var(--up);letter-spacing:.5px}
+  main{padding:12px 16px;display:grid;gap:12px;grid-template-columns:1fr 1fr}
+  .full{grid-column:1/-1}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:12px 14px}
+  .lbl{color:var(--mut);font-size:11px;letter-spacing:.6px;text-transform:uppercase;margin-bottom:6px}
+  .up{color:var(--up)} .dn{color:var(--dn)} .mut{color:var(--mut)} .acc{color:var(--acc)} .blue{color:var(--blue)}
+  .big{font-size:32px;font-weight:700;letter-spacing:1px}
+  .row{display:flex;gap:16px;flex-wrap:wrap;align-items:baseline}
+  .kv{display:flex;flex-direction:column;min-width:64px} .kv .v{font-size:15px;font-weight:600} .kv .k{font-size:10px;color:var(--mut)}
+  /* ALERT banner */
+  .alert{grid-column:1/-1;border-radius:10px;padding:13px 18px;font-size:17px;font-weight:700;
+    display:flex;align-items:center;gap:14px;border:1px solid var(--line)}
+  .alert .rd{font-size:13px;font-weight:600;opacity:.85} .alert .sp{flex:1}
+  .a-watch{background:#10151e;color:var(--mut)}
+  .a-arm{background:linear-gradient(90deg,#2a2008,#1a140a);color:var(--acc);border-color:#5a4410;animation:pulse 1s infinite}
+  .a-fire{background:#0f2a1b;color:var(--up);border-color:#1c5a38;animation:bigpulse 1s infinite;font-size:18px}
+  .a-breach{background:linear-gradient(90deg,#3a0d0d,#2a1408);color:#ff7a59;border-color:#7a2a1c;animation:pulse 1s infinite;font-size:18px}
+  .a-trade{background:#0f2030;color:var(--blue);border-color:#1c456a}
+  /* POST-STOP COOLDOWN — deliberately violet/blue (never red/green) so it can never be mistaken for a
+     breach or a fire; flashes for the ENTIRE window, not just when price happens to be near a level. */
+  .a-cooldown{background:linear-gradient(90deg,#1a1030,#100a24);color:#b39dff;border-color:#4a2fa0;
+    animation:cdflash 1.0s infinite;font-size:18px}
+  /* WATCHDOG states — a dead/stalled engine must be UNMISSABLE, never a plausible frozen screen */
+  .a-frozen{background:linear-gradient(90deg,#3a0d0d,#240808);color:#ff9a8a;border-color:var(--dn);
+    animation:pulse 1s infinite;font-size:18px}
+  .a-closed{background:#141922;color:var(--mut);border-color:var(--line)}
+  body.frozen main>section{opacity:.35;transition:opacity .3s}
+  /* in-trade feed-gap / exit-rejection — flash, don't whisper (was a 2px outline) */
+  .alert.feedcrit{animation:pulse 1s infinite;box-shadow:inset 0 0 0 2px var(--dn)}
+  @keyframes pulse{0%,100%{box-shadow:0 0 0 0 rgba(245,166,35,.0)}50%{box-shadow:0 0 16px 1px rgba(245,166,35,.35)}}
+  @keyframes bigpulse{0%,100%{box-shadow:0 0 0 0 rgba(55,224,138,.0)}50%{box-shadow:0 0 22px 3px rgba(55,224,138,.55)}}
+  @keyframes cdflash{0%,100%{box-shadow:0 0 0 0 rgba(140,110,255,.0);opacity:1}50%{box-shadow:0 0 18px 2px rgba(140,110,255,.55);opacity:.82}}
+  /* pin levels */
+  .lvl{display:flex;justify-content:space-between;padding:5px 8px;border:1px solid var(--line);border-radius:7px;margin-top:6px;background:var(--panel2)}
+  .lvl .t{color:var(--mut);font-size:11px} .lvl .p{font-size:16px;font-weight:700} .lvl .d{font-size:11px}
+  .band{height:8px;background:var(--panel2);border:1px solid var(--line);border-radius:5px;position:relative;margin-top:8px}
+  .band .mark{position:absolute;top:-3px;bottom:-3px;width:3px;background:var(--acc)}
+  table{width:100%;border-collapse:collapse;font-size:11.6px} th,td{text-align:right;padding:3.5px 7px;border-bottom:1px solid var(--line)}
+  th{color:var(--mut);font-weight:500;position:sticky;top:0;background:var(--panel)} th:first-child,td:first-child{text-align:left}
+  .scroll{max-height:300px;overflow:auto} .scroll.sm{max-height:210px}
+  .meter{height:9px;background:var(--panel2);border-radius:6px;overflow:hidden;border:1px solid var(--line)}
+  .meter>div{height:100%}
+  .cond{display:flex;align-items:center;gap:8px;padding:4px 0;border-bottom:1px dotted var(--line)}
+  .cond .ic{width:14px;text-align:center;font-weight:700} .cond .nm{width:140px} .cond .dt{color:var(--mut);font-size:11px;min-width:84px}
+  .cond .pb{flex:1;height:6px;background:var(--panel2);border-radius:4px;overflow:hidden;border:1px solid var(--line)} .cond .pb>div{height:100%}
+  .gauge{height:10px;background:var(--panel2);border-radius:6px;overflow:hidden;border:1px solid var(--line);margin-top:5px} .gauge>div{height:100%}
+  .badge{padding:1px 7px;border-radius:9px;font-size:10.5px;font-weight:700}
+  .b-up{background:#10301f;color:var(--up)} .b-dn{background:#321414;color:var(--dn)} .b-neu{background:#1b2330;color:var(--mut)} .b-arm{background:#322611;color:var(--acc)}
+  /* ONE stale style everywhere (data-age, distinct from b-dn = direction/failure) */
+  .b-stale{background:var(--dn);color:#fff}
+  /* prominence tiers: .big = glance-critical only; .med = secondary headline; .kvbig = detail value */
+  .med{font-size:20px;font-weight:700} .kvbig{font-size:15px;font-weight:600}
+  .colstack{display:flex;flex-direction:column;gap:12px} .colstack .card{margin:0}
+  .snd-on{color:var(--blue)!important;border-color:#1c456a!important}
+  .snd-muted{animation:pulse 2s infinite;color:var(--acc)!important;border-color:#5a4410!important}
+  .snd-bad{animation:pulse 1s infinite;color:#fff!important;background:#b3261e!important;border-color:#ff6b61!important}
+  #sndbanner{display:none;position:fixed;left:0;right:0;top:0;z-index:9999;background:#b3261e;color:#fff;font-weight:700;
+             font-size:18px;text-align:center;padding:12px 16px;cursor:pointer;box-shadow:0 2px 12px rgba(0,0,0,.5)}
+  /* expiry-day regime badge — the biggest single fact about the session (this system earns on expiry) */
+  .expday-hot{color:var(--acc)!important;border-color:var(--acc)!important;background:rgba(245,166,35,.12);font-weight:700}
+  #pnlspark{align-self:center}
+  /* 2.0: WHY-NO-TRADE strip — idle time is explained, never mysterious */
+  .why{grid-column:1/-1;display:flex;gap:14px;align-items:center;flex-wrap:wrap;padding:7px 14px;border:1px solid var(--line);
+       border-radius:9px;background:var(--panel2);font-size:12.5px}
+  .why .whylbl{color:var(--mut);font-size:10.5px;letter-spacing:.8px}
+  .why.w-trade{border-color:#1c456a} .why.w-block{border-color:#5a4410} .why.w-bad{border-color:var(--dn)}
+  .feed-ok{color:var(--up)!important;border-color:#1c3a2a!important} .feed-bad{color:#fff!important;background:var(--dn);border-color:var(--dn)!important;animation:pulse 1s infinite}
+  .tag{padding:1px 6px;border-radius:5px;font-size:10px} .t-entry{background:#10243a;color:var(--blue)} .t-exit{background:#321414;color:var(--dn)} .t-scale{background:#322611;color:var(--acc)}
+  .heat{position:relative} .heat>span{position:absolute;left:0;top:0;bottom:0;border-radius:4px;opacity:.22}
+  .oicell{position:relative} .oibar{position:absolute;top:1px;bottom:1px;border-radius:3px;opacity:.30} .oibar.ce{right:0;background:var(--dn)} .oibar.pe{left:0;background:var(--up)}
+  tr.atm{background:#13202c} tr.atm td{border-color:#2a3a4d} .itm{background:var(--itm)}
+  .strike{font-weight:700;text-align:center!important}
+  tr.live-trade{background:#16202e;box-shadow:inset 3px 0 0 var(--acc)}
+  td.mag{font-weight:700;box-shadow:inset 0 0 0 1px var(--acc);border-radius:3px}
+  .card.stale{box-shadow:inset 3px 0 0 var(--dn)}
+  .leg{font-size:10.5px;color:var(--mut);margin-top:5px}
+/* ===== NIFTY HERO PANEL ===== (assumes --bg/--panel/--panel2/--ink/--mut/--up/--dn/--acc/--blue/--line exist) */
+#niftycard{position:relative}
+.nhead{display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:10px}
+.nhead .lbl{font-size:12px;letter-spacing:.5px;color:var(--mut);text-transform:uppercase}
+.nhead .right{display:flex;gap:6px;align-items:center}
+.narm{font-size:10px;font-weight:700;padding:2px 8px;border-radius:5px;letter-spacing:.5px;border:1px solid var(--line);color:var(--mut)}
+.narm.s-WATCHING{color:var(--blue);border-color:rgba(74,163,255,.5);background:rgba(74,163,255,.1)}
+.narm.s-ABOUT_TO_BREACH{color:var(--acc);border-color:rgba(245,166,35,.5);background:rgba(245,166,35,.12)}
+.narm.s-BREACHED{color:var(--dn);border-color:rgba(239,85,82,.5);background:rgba(239,85,82,.12)}
+.narm.s-IN_TRADE{color:#bcdcff;border-color:rgba(74,163,255,.6);background:rgba(74,163,255,.22)}
+
+.nspotrow{display:flex;align-items:baseline;gap:10px;justify-content:center;margin:2px 0 12px}
+#nspot{font-size:46px;font-weight:800;letter-spacing:1px;line-height:1}
+.ndelta{font-size:15px;font-weight:700}
+.ndelta.up{color:var(--up)}.ndelta.dn{color:var(--dn)}.ndelta.mut{color:var(--mut)}
+
+/* HERO BAND */
+.bandwrap{position:relative;margin:6px 2px 4px}
+.bandends{display:flex;justify-content:space-between;font-size:10px;color:var(--mut);margin-bottom:4px;letter-spacing:.4px}
+.bandends .e{display:flex;flex-direction:column}
+.bandends .e.r{text-align:right;align-items:flex-end}
+.bandends .e .pin{font-weight:700;font-size:13px}
+.bandends .e.l .pin{color:var(--dn)}
+.bandends .e.r .pin{color:var(--up)}
+.track{position:relative;height:46px;border-radius:9px;border:1px solid var(--line);overflow:hidden;
+  background:linear-gradient(90deg,
+    rgba(239,85,82,.16) 0%, rgba(239,85,82,.05) 14%,
+    rgba(39,208,122,.06) 42%, rgba(39,208,122,.06) 58%,
+    rgba(39,208,122,.05) 86%, rgba(39,208,122,.16) 100%)}
+/* danger-side intensifier */
+#niftycard.hot-dn .track::before,#niftycard.hot-up .track::after{content:"";position:absolute;top:0;bottom:0;width:22%;pointer-events:none}
+#niftycard.hot-dn .track::before{left:0;background:linear-gradient(90deg,rgba(239,85,82,.28),transparent)}
+#niftycard.hot-up .track::after{right:0;background:linear-gradient(270deg,rgba(39,208,122,.28),transparent)}
+#niftycard.is-critical.hot-dn .track::before{background:linear-gradient(90deg,rgba(239,85,82,.5),transparent)}
+#niftycard.is-critical.hot-up .track::after{background:linear-gradient(270deg,rgba(245,166,35,.5),transparent)}
+#niftycard.is-breach .track{animation:trackflash 1s steps(1) infinite}
+@keyframes trackflash{50%{border-color:var(--dn)}}
+.midline{position:absolute;left:50%;top:6px;bottom:6px;width:1px;background:var(--line)}
+/* spot marker */
+#spotMarker{position:absolute;top:-4px;bottom:-4px;left:50%;width:0;transition:left .4s cubic-bezier(.4,0,.2,1);z-index:3}
+#spotMarker .stem{position:absolute;top:0;bottom:0;left:-1.5px;width:3px;background:var(--ink);border-radius:2px;box-shadow:0 0 8px rgba(232,238,246,.4)}
+#spotMarker .cap{position:absolute;top:-3px;left:50%;transform:translateX(-50%);width:0;height:0;border-left:5px solid transparent;border-right:5px solid transparent;border-top:7px solid var(--ink)}
+#niftycard.is-critical #spotMarker .stem{background:var(--acc)}
+#niftycard.is-critical #spotMarker .cap{border-top-color:var(--acc)}
+#niftycard.is-breach.hot-dn #spotMarker .stem{background:var(--dn)}
+#niftycard.is-breach.hot-dn #spotMarker .cap{border-top-color:var(--dn)}
+#niftycard.is-breach.hot-up #spotMarker .stem{background:var(--up)}
+#niftycard.is-breach.hot-up #spotMarker .cap{border-top-color:var(--up)}
+#niftycard.is-breach #spotMarker .stem{animation:mkpulse 1s ease-in-out infinite}
+@keyframes mkpulse{50%{box-shadow:0 0 14px rgba(239,85,82,.9)}}
+.banddist{display:flex;justify-content:space-between;font-size:10px;color:var(--mut);margin-top:4px}
+
+/* DANGER BANNER */
+.nbanner{margin:10px 0;text-align:center;font-size:15px;font-weight:800;letter-spacing:.6px;padding:7px;border-radius:8px;border:1px solid var(--line);background:var(--panel2)}
+.nbanner.safe{color:var(--blue)}
+.nbanner.approach.up,.nbanner.approach.dn,.nbanner.critical.up,.nbanner.critical.dn{color:var(--acc)}
+.nbanner.critical{border-color:rgba(245,166,35,.5);background:rgba(245,166,35,.08)}
+.nbanner.breach{animation:bantxt 1s ease-in-out infinite}
+.nbanner.breach.up{color:var(--up);border-color:rgba(39,208,122,.5);background:rgba(39,208,122,.1)}
+.nbanner.breach.dn{color:var(--dn);border-color:rgba(239,85,82,.5);background:rgba(239,85,82,.1)}
+@keyframes bantxt{50%{opacity:.55}}
+
+/* CE / PE */
+.cepe{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin:12px 0}
+.opt{background:var(--panel2);border:1px solid var(--line);border-radius:9px;padding:10px 12px;position:relative;overflow:hidden}
+.opt::before{content:"";position:absolute;top:0;left:0;right:0;height:2px;opacity:.6}
+.opt.ce::before{background:var(--dn)}
+.opt.pe::before{background:var(--up)}
+.opt .tag{font-size:11px;letter-spacing:.6px;color:var(--mut);display:flex;justify-content:space-between;align-items:baseline}
+.opt .tag .ks{color:var(--ink);font-weight:700;font-size:14px;letter-spacing:.5px}
+.opt .px{font-size:24px;font-weight:800;margin-top:3px;letter-spacing:1px}
+.opt.ce .px{color:var(--dn)}
+.opt.pe .px{color:var(--up)}
+
+/* BUY callout */
+.nbuy{margin:10px 0;display:flex;align-items:center;gap:8px;justify-content:center;background:rgba(245,166,35,.1);border:1px solid rgba(245,166,35,.45);border-radius:8px;padding:7px 10px}
+.nbuy .k{font-size:10px;letter-spacing:1px;color:var(--acc);font-weight:700}
+.nbuy .v{font-size:14px;font-weight:800;color:var(--ink)}
+.nbuy.up{background:rgba(39,208,122,.1);border-color:rgba(39,208,122,.45)}
+.nbuy.up .k{color:var(--up)}
+.nbuy.dn{background:rgba(239,85,82,.1);border-color:rgba(239,85,82,.45)}
+.nbuy.dn .k{color:var(--dn)}
+
+/* secondary stats */
+.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-top:6px}
+.stat{background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:7px 9px}
+.stat .sv{font-size:14px;font-weight:700}
+.stat .sv.up{color:var(--up)}.stat .sv.dn{color:var(--dn)}.stat .sv.mut{color:var(--mut)}
+.stat .sk{font-size:9px;letter-spacing:.4px;color:var(--mut);margin-top:2px}
+
+/* provenance / freshness */
+#calcinfo{margin-top:12px;font-size:11px;line-height:1.5;color:var(--mut)}
+#calcinfo b{color:var(--ink);font-weight:700}
+#calcinfo .up{color:var(--up)}#calcinfo .dn{color:var(--dn)}#calcinfo .mut{color:var(--mut)}
+#freshwrap{margin-top:8px}
+.freshtrack{height:4px;background:var(--panel2);border:1px solid var(--line);border-radius:3px;overflow:hidden}
+#freshbar{height:100%;width:0;transition:width .6s ease,background .3s ease;background:var(--up)}
+#freshlbl{font-size:10px;color:var(--mut);margin-top:4px}
+
+/* narrow / 1-column survival */
+@media (max-width:560px){
+  .stats{grid-template-columns:repeat(2,1fr)}
+  #nspot{font-size:38px}
+}
+</style></head><body>
+<div id="sndbanner" role="alert"></div>
+<header>
+  <h1>⚡ VAJRA 2.0</h1><span class="sub">pin-risk / gamma-explosion · paper engine</span>
+  <span class="sp"></span>
+  <span class="cap">CAPITAL <b id="capital">—</b> <span id="capitalpct" class="mut"></span> <span id="capbreak" class="mut" style="font-size:11px"></span></span>
+  <svg id="pnlspark" width="150" height="26" viewBox="0 0 150 26" style="display:none"><title>cumulative P&amp;L path · dotted = day high · dots = exits</title></svg>
+  <span class="today pill">TRADES TODAY <b id="today">0</b></span>
+  <span id="sdate" class="pill">date …</span>
+  <span id="liveflag" class="pill">LIVE_ORDERS …</span>
+  <span id="expiry" class="pill">expiry …</span>
+  <span id="expday" class="pill" style="display:none"></span>
+  <span id="rmode" class="pill">routing …</span>
+  <span id="feedchip" class="pill" title="NIFTY feed sanity: frozen spot / implausible basis / jump">feed …</span>
+  <span id="sndbtn" class="pill" style="cursor:pointer" title="Engine-driven cues. Click: mute 15 min / unmute; shift-click: test.">🔔 sound</span>
+  <span id="lagpill" class="pill" title="Data delay: engine round published → shown in this browser. 'live' = pushed (SSE); 'poll' = fallback">live —</span>
+  <span id="clock" class="pill">—</span>
+</header>
+<main>
+  <div id="alert" class="alert a-watch"><span id="alerticon">●</span><span id="alerttxt">—</span><span class="sp"></span><span id="alertrd" class="rd"></span></div>
+  <div id="why" class="why full"><span class="whylbl">WHY NO TRADE</span><span id="whytxt" class="mut">—</span><span class="sp"></span><span id="whyband" class="mut"></span></div>
+
+<!-- ===== NIFTY HERO PANEL — drop in as the first .card in the grid ===== -->
+<section class="card" id="niftycard">
+  <div class="nhead">
+    <span class="lbl">NIFTY — execution instrument</span>
+    <span class="right">
+      <span id="narm" class="narm" style="display:none"></span>
+      <span id="tickstale" class="badge b-stale" style="display:none">⚠ TICK STALE</span>
+      <span id="lvlstale" class="badge b-stale" style="display:none">⚠ LEVELS STALE</span>
+    </span>
+  </div>
+
+  <!-- towering spot + delta -->
+  <div class="nspotrow">
+    <span id="nspot">—</span>
+    <span id="ndelta" class="ndelta mut"></span>
+  </div>
+
+  <!-- HERO BAND: lower-pin ... spot ... upper-pin -->
+  <div class="bandwrap">
+    <div class="bandends">
+      <span class="e l"><span>▼ LOWER PIN</span><span class="pin" id="nlo">—</span></span>
+      <span class="e r"><span>UPPER PIN ▲</span><span class="pin" id="nup">—</span></span>
+    </div>
+    <div class="track">
+      <div class="midline"></div>
+      <div id="spotMarker"><div class="stem"></div><div class="cap"></div></div>
+    </div>
+    <div class="banddist">
+      <span>→ <span id="ndnd">—</span></span>
+      <span><span id="nupd">—</span> ←</span>
+    </div>
+  </div>
+
+  <!-- single danger banner (proximity + which side) -->
+  <div id="nbanner" class="nbanner safe">—</div>
+  <div id="nvel" class="leg" style="text-align:center;display:none"></div>
+
+  <!-- BUY target callout (from arming) -->
+  <div id="nbuy" class="nbuy" style="display:none">
+    <span class="k">BUY</span><span class="v" id="nbuytxt">—</span>
+  </div>
+
+  <!-- CE / PE @ ATM strike -->
+  <div class="cepe">
+    <div class="opt ce">
+      <div class="tag"><span>ATM CALL</span><span class="ks">K <span id="natmce_k">—</span></span></div>
+      <div class="px" id="natmce">—</div>
+    </div>
+    <div class="opt pe">
+      <div class="tag"><span>ATM PUT</span><span class="ks">K <span id="natmpe_k">—</span></span></div>
+      <div class="px" id="natmpe">—</div>
+    </div>
+  </div>
+
+  <!-- secondary stats -->
+  <div class="stats">
+    <div class="stat"><div class="sv" id="nfut">—</div><div class="sk" id="nfutlbl">FUTURE</div></div>
+    <div class="stat"><div class="sv" id="nbasis">—</div><div class="sk" id="nbasislbl">BASIS</div></div>
+    <div class="stat"><div class="sv" id="nvix">—</div><div class="sk">INDIA VIX</div></div>
+    <div class="stat"><div class="sv" id="noi">—</div><div class="sk">OI MAG CE/PE</div></div>
+  </div>
+
+  <!-- provenance + freshness -->
+  <div id="calcinfo"><span class="mut">levels not yet calculated</span></div>
+  <div id="freshwrap" style="display:none">
+    <div class="freshtrack"><div id="freshbar"></div></div>
+    <div id="freshlbl"></div>
+  </div>
+</section>
+
+  <!-- Column 2 beside the hero: SCREAM + POSITION + LEAN stacked — everything glance-critical
+       lands ABOVE THE FOLD at 1080p (POSITION was ~1300px down while being priority #1 in a trade) -->
+  <div class="colstack">
+
+  <!-- THE SCREAM: about to breach + cross-instrument confluence (kept beside NIFTY) -->
+  <section class="card">
+    <div class="lbl">the scream — about to breach? who agrees / disagrees?</div>
+    <div class="row" style="justify-content:space-between">
+      <div><span id="setupstate" class="big">—</span> <span id="leanbadge" class="badge b-neu">—</span> <span id="entrystatus" class="badge b-neu" style="display:none"></span></div>
+      <div id="screamtarget" class="med acc" style="text-align:right">—</div>
+    </div>
+    <div id="screammsg" class="arm-msg" style="margin-top:8px">—</div>
+    <div style="margin-top:10px;display:flex;gap:14px">
+      <div style="flex:1"><div class="lbl up">same side (confirming)</div><div id="sameSide" class="mut">—</div></div>
+      <div style="flex:1"><div class="lbl dn">opposite side (warning)</div><div id="oppSide" class="mut">—</div></div>
+    </div>
+    <div id="pulltotals" class="mut" style="margin-top:6px;font-size:11px"></div>
+  </section>
+
+  <!-- POSITION (moved up beside the hero — glance priority #1 when in a trade) -->
+  <section class="card">
+    <div class="lbl">NIFTY position (paper)</div>
+    <div id="position" style="margin-top:6px"></div>
+  </section>
+
+  <!-- NIFTY LEAN (bullish/bearish from the other instruments) -->
+  <section class="card">
+    <div class="lbl">NIFTY lean — bullish / bearish from the OTHER instruments (where a pin-risk breach may come)</div>
+    <div class="row" style="justify-content:space-between;align-items:center">
+      <div><span id="niftylean" class="big">—</span> <span id="decision" class="badge b-neu">—</span></div>
+      <div style="text-align:right"><div class="mut">BIAS_EWMA</div><div id="bias" class="kvbig">0.0000</div><div class="mut">thr <span id="thr">—</span> · conv <span id="conv">—</span></div></div>
+    </div>
+    <div class="gauge"><div id="biasbar"></div></div>
+    <div style="margin-top:9px;display:flex;gap:14px">
+      <div style="flex:1"><div class="lbl up">▲ pulling NIFTY UP (broke UPPER)</div><div id="leanup" class="mut">—</div></div>
+      <div style="flex:1"><div class="lbl dn">▼ pulling NIFTY DOWN (broke LOWER)</div><div id="leandn" class="mut">—</div></div>
+    </div>
+    <div id="reason" class="mut" style="margin-top:6px"></div>
+    <div id="flags" class="mut" style="margin-top:4px"></div>
+  </section>
+
+  </div><!-- /colstack -->
+
+  <!-- TRADE JOURNAL (round-trip, one row each) — brought up top (#2/#3) -->
+  <section class="card full">
+    <div class="row" style="justify-content:space-between;align-items:center"><div class="lbl">trade journal — one row per round-trip · entry → exit price</div><div id="blotsum" class="mut"></div></div>
+    <div class="scroll"><table id="blot"><thead><tr>
+      <th>in</th><th>out</th><th>side</th><th>strike</th><th>lots</th><th>entry</th><th>exit</th><th>P&L %</th><th>P&L Rs</th><th>exit reason</th><th>confluence (same / opp)</th>
+    </tr></thead>
+      <tbody id="blotrows"><tr><td class="mut" colspan="11">no trades yet today</td></tr></tbody></table></div>
+    <div class="leg">exit: <span class="up">TRAIL_SL</span> = trailing profit · <span class="dn">SL_HIT</span> = hard stop · <span class="blue">EXPIRY_FLATTEN / END_OF_SESSION</span> = forced close &nbsp;|&nbsp; confluence: <span class="up">STRONG</span> / <span class="acc">MILD</span> / <span class="mut">LONE</span> / <span class="dn">CONFLICTED</span></div>
+  </section>
+
+  <!-- BURST BOARD -->
+  <section class="card">
+    <div class="lbl">burst board — who is about to pop a pin-risk level</div>
+    <div class="scroll sm"><table id="burst"><thead><tr><th>instrument</th><th>wt</th><th>spot</th><th>state</th><th>→ nearest level</th><th>heat</th></tr></thead><tbody id="burstrows"></tbody></table></div>
+  </section>
+
+  <!-- BREACH ALERTS -->
+  <section class="card">
+    <div class="lbl">breach alerts — already through a pin-risk level</div>
+    <div id="breachbox" class="scroll sm"></div>
+  </section>
+
+  <!-- LIVE EVENTS — feed gaps / rejections / anomalies the engine logged -->
+  <section class="card full">
+    <div class="lbl">live events <span id="stalebadge" class="badge b-stale" style="display:none">LEVELS STALE</span></div>
+    <div id="eventbox" class="scroll" style="max-height:160px"></div>
+  </section>
+
+  <!-- OPTION CHAIN — pushed below the journal (#2) -->
+  <section class="card full">
+    <div class="lbl">NIFTY option chain — CE ◄ strike ► PE  (OI bars show the magnets)</div>
+    <div class="scroll"><table id="chain"><thead><tr>
+      <th>OI</th><th>vol</th><th>vwap</th><th>CE ltp</th><th class="strike">STRIKE</th><th>PE ltp</th><th>vwap</th><th>vol</th><th>OI</th>
+    </tr></thead><tbody id="chainrows"></tbody></table></div>
+  </section>
+
+  <!-- UNIVERSE -->
+  <section class="card full">
+    <div class="lbl">universe — tracked everywhere, executed on NIFTY only (by weight)</div>
+    <div class="scroll"><table id="uni"><thead><tr>
+      <th>instrument</th><th>wt</th><th>spot</th><th>Δ</th><th>future</th><th>basis</th><th>lower</th><th>upper</th><th>→up</th><th>→dn</th><th>state</th><th>dir</th><th>str</th><th>vol×</th>
+    </tr></thead><tbody id="urows"></tbody></table></div>
+  </section>
+
+  <!-- PIN-RISK LEVEL HISTORY — kept at the VERY BOTTOM (operator rule) -->
+  <section class="card full">
+    <div class="row" style="justify-content:space-between;align-items:center"><div class="lbl">pin-risk level history — every recompute &amp; when</div><div id="lvlhsum" class="mut"></div></div>
+    <div class="scroll sm"><table id="lvlh"><thead><tr>
+      <th>time</th><th>trigger</th><th>lower</th><th>upper</th><th>band</th><th>ATM</th><th>ITM CE k@vwap</th><th>ITM PE k@vwap</th><th>basis</th>
+    </tr></thead><tbody id="lvlhrows"><tr><td class="mut" colspan="9">no levels calculated yet</td></tr></tbody></table></div>
+  </section>
+</main>
+<script>
+const f=(x,d=2)=>x==null?'—':Number(x).toFixed(d);
+const i0=x=>x==null?'—':Math.round(x).toLocaleString('en-IN');
+const inr=x=>x==null?'—':'Rs '+Math.round(x).toLocaleString('en-IN');
+const cls=v=>v>0?'up':(v<0?'dn':'mut');
+const sgn=v=>v>0?'+':'';
+const arr=d=>d==null||Math.abs(d)<1e-9?'':(d>0?'▲':'▼');
+const dur=sec=>{sec=Math.max(0,Math.round(sec));const h=Math.floor(sec/3600),m=Math.floor((sec%3600)/60),s2=sec%60;
+  return h>0?h+'h'+String(m).padStart(2,'0')+'m':(m>0?m+'m'+String(s2).padStart(2,'0')+'s':s2+'s');};
+const hhmmss=ms=>ms?new Date(ms).toLocaleTimeString():'—';
+
+// ---- TIME-DIMENSION helpers (panel v2: "a cockpit of positions without velocities") ----
+// Client-side ring buffers off the 250ms poll; ~5min depth; reset on refresh (accepted trade-off).
+let _spotBuf=[],_premBuf=[],_floorBuf=[],_lastSpark=0,_pnlSvgCache='';
+function bufPush(buf,t,v){ if(t==null||v==null||!isFinite(v)) return;
+  const L=buf[buf.length-1]; if(L&&L.t===t) return;
+  buf.push({t:t,v:v}); const cut=t-300000; while(buf.length&&buf[0].t<cut) buf.shift(); }
+function bufRate(buf,winMs){ // units per MINUTE over the last window; null until >=15s of data
+  if(buf.length<2) return null; const t1=buf[buf.length-1];
+  let t0=buf[0]; for(const p of buf){ if(p.t>=t1.t-winMs){ t0=p; break; } }
+  const dt=t1.t-t0.t; if(dt<15000) return null; return (t1.v-t0.v)/(dt/60000); }
+function sparkSvg(series,w,h,opts){ // series: [{t,v}] -> polyline; opts: {floor:[{t,v}], hi:number, dots:[{t,v,c}], color}
+  opts=opts||{}; const all=series.concat(opts.floor||[]);
+  if(series.length<2) return '';
+  const t0=all[0].t, t1=series[series.length-1].t||t0+1;
+  let mn=Infinity,mx=-Infinity; all.forEach(p=>{mn=Math.min(mn,p.v);mx=Math.max(mx,p.v);});
+  if(opts.hi!=null){mn=Math.min(mn,opts.hi);mx=Math.max(mx,opts.hi);}
+  if(mx-mn<1e-9){mx=mn+1;}
+  const X=t=>(( (t-t0)/Math.max(1,t1-t0) )*(w-4)+2).toFixed(1);
+  const Y=v=>(h-2-((v-mn)/(mx-mn))*(h-4)).toFixed(1);
+  const line=pts=>pts.map(p=>X(p.t)+','+Y(p.v)).join(' ');
+  let svg='<polyline fill="none" stroke="'+(opts.color||'currentColor')+'" stroke-width="1.3" points="'+line(series)+'"/>';
+  if(opts.floor&&opts.floor.length>1) svg+='<polyline fill="none" stroke="var(--dn)" stroke-width="1" stroke-dasharray="3,2" points="'+line(opts.floor)+'"/>';
+  if(opts.hi!=null) svg+='<line x1="2" y1="'+Y(opts.hi)+'" x2="'+(w-2)+'" y2="'+Y(opts.hi)+'" stroke="var(--mut)" stroke-width="0.8" stroke-dasharray="2,3"/>';
+  (opts.dots||[]).forEach(d=>{svg+='<circle cx="'+X(d.t)+'" cy="'+Y(d.v)+'" r="2" fill="'+d.c+'"/>';});
+  return svg; }
+function stcls(s){return s&&s.endsWith('UP')?'up':(s&&s.endsWith('DOWN')?'dn':'mut');}
+function stbadge(s){const c=s&&s.endsWith('UP')?'b-up':(s&&s.endsWith('DOWN')?'b-dn':'b-neu');return '<span class="badge '+c+'">'+s+'</span>';}
+
+// ---- ALERT SOUNDS (VAJRA 2.0.2) — the ENGINE decides when a sound is due; this page only plays it. ----
+// Cues: entry / exit_profit / exit_loss / approach (up / down) / feed_alarm / armed (09:20 sound check).
+// Sister/stock breaches NEVER make a sound. Rate limits + hysteresis live in vajra/alerts.py.
+// 2.0.2 (sound council + operator): ONLY real MP3 files play -- no browser tones, no Python/Windows
+// sounds. Sound is ON by default and stays ON until the operator turns it OFF (and OFF stays OFF until he
+// turns it ON). A locked page shows a red banner + tab title and keeps missed trade cues for the unlock;
+// a higher-priority cue cuts a lower one; each cue's length decides when the next may start; files are
+// re-fetched when they change (sounds_rev); a broken file shows a red banner; only one tab plays; every
+// cue's outcome is reported to the engine (which warns on its console when no page can play).
+const SND={entry:'entry.mp3',exit_profit:'exit_profit.mp3',exit_loss:'exit_loss.mp3',
+           approach_UP:'approach_up.mp3',approach_DOWN:'approach_dn.mp3',feed_alarm:'feed_alarm.mp3',armed:'armed.mp3'};
+const PRIO={exit_loss:5,exit_profit:5,entry:4,feed_alarm:3,approach_UP:2,approach_DOWN:2,armed:1,test:1};
+const TRADE_KINDS={entry:1,exit_profit:1,exit_loss:1,feed_alarm:1};
+function _ls(k,v){try{ if(v===undefined) return localStorage.getItem(k); localStorage.setItem(k,v);}catch(e){return null;}}
+// ON by default; OFF only when the operator turns it off, and it stays off until he turns it back on.
+let _sndOff=_ls('vajra_snd_off')==='1';
+const _muted=()=>_sndOff;
+let _ctx=null,_buf={},_bad={},_q=[],_cur=null,_sndSeq=null,_sndBoot=null,_lastSndText='',_sndRev=null,
+    _clkOff=0,_pendLocked=[],_outcomes=[],_wasLocked=null,_lockedAtDown=false,_fbSeqs=new Set();
+let _beaconNow=()=>{};
+const _tabId=Math.random().toString(36).slice(2,10);
+function _audioCtx(){
+  if(_ctx && _ctx.state!=='closed') return _ctx;
+  const C=window.AudioContext||window.webkitAudioContext; if(!C) return null;
+  try{ _ctx=new C(); }catch(e){ _ctx=null; return null; }
+  _buf={}; _loadSounds(_sndRev||'0');
+  _ctx.onstatechange=()=>{ _sndPill(); if(_ctx&&_ctx.state==='running') _flushLocked(); };
+  return _ctx; }
+function _loadSounds(rev){ const c=_ctx; if(!c) return;
+  Object.entries(SND).forEach(([k,f])=>{
+    fetch('/sounds/'+f+'?v='+rev,{cache:'no-store'})
+      .then(r=>{ if(!r.ok) throw new Error('HTTP '+r.status); return r.arrayBuffer(); })
+      .then(b=>c.decodeAudioData(b))
+      .then(d=>{ if(c===_ctx){ _buf[k]=d; delete _bad[k]; } _sndPill(); })
+      .catch(e=>{ _bad[k]=f+' ('+(e&&e.message||'decode failed')+')'; _sndPill(); }); }); }
+function _sndRevSeen(rev){ if(!rev||rev===_sndRev) return; _sndRev=rev; if(_ctx) _loadSounds(rev); }   // files changed -> re-decode
+function _locked(){ return !_ctx || _ctx.state!=='running'; }
+function _unlock(){ const c=_audioCtx(); if(c&&c.state==='suspended') c.resume().then(()=>{_sndPill(); _flushLocked();}).catch(()=>{}); }
+// leader election: only one VAJRA tab plays (localStorage lease, 5 s; an unlocked tab takes over from a locked one)
+function _leader(){ let L=null; try{ L=JSON.parse(_ls('vajra_snd_leader')||'null'); }catch(e){}
+  const now=Date.now(), me=!L||L.id===_tabId||now-L.t>5000||(L.locked&&!_locked());
+  if(me) _ls('vajra_snd_leader',JSON.stringify({id:_tabId,t:now,locked:_locked()}));
+  return me || _ls('vajra_snd_leader')===null; }
+let _isLeader=_leader();
+function _outcome(k,seq,o){ _outcomes.push([Date.now(),k,seq,o]); if(_outcomes.length>60) _outcomes.shift();
+  if(o==='locked'||o==='error') _beaconNow(); }
+function _stopCur(){ if(!_cur) return; const c=_cur; _cur=null; clearTimeout(c.timer);
+  try{ if(c.gain&&_ctx){ c.gain.gain.setTargetAtTime(0,_ctx.currentTime,0.03); } if(c.src) c.src.stop(_ctx.currentTime+0.12); }catch(e){} }
+function _start(it){
+  const c=_ctx, b=_buf[it.k]; let dur=0, src=null, gain=null;
+  if(b){ src=c.createBufferSource(); gain=c.createGain(); gain.gain.value=0.9; src.buffer=b; src.connect(gain).connect(c.destination);
+         src.start(); dur=b.duration; }
+  else { _outcome(it.k,it.seq,'file'); setTimeout(_next,0); return; }   // only real MP3s ever play
+  const fin=()=>{ if(_cur!==cur) return; _cur=null; clearTimeout(cur.timer); setTimeout(_next,120); };
+  const cur={k:it.k,prio:PRIO[it.k]||1,src,gain,timer:setTimeout(fin,(dur+0.5)*1000)};
+  if(src) src.onended=fin;
+  _cur=cur; if(it.seq!=null) _outcome(it.k,it.seq,'played'); }
+function _next(){ if(_cur||!_q.length) return; if(_locked()) return;
+  _q.sort((a,b)=>(PRIO[b.k]||1)-(PRIO[a.k]||1)||a.t-b.t); _start(_q.shift()); }
+function playKind(k, seq, force){
+  if(!force){
+    if(_muted()){ _outcome(k,seq,'muted'); return; }
+    if(!_isLeader){ _outcome(k,seq,'other_tab'); return; }
+  }
+  if(_locked()){ _unlock();
+    if(_locked()){ if(TRADE_KINDS[k]){ _pendLocked.push({k,seq,t:Date.now()}); if(_pendLocked.length>6) _pendLocked.shift(); }
+                   _outcome(k,seq,'locked'); _sndPill(); return; } }
+  const p=PRIO[k]||1, it={k,seq,t:Date.now()};
+  if(k.startsWith('exit')) _q=_q.filter(x=>{ if(x.k==='entry'){ _outcome(x.k,x.seq,'superseded'); return false; } return true; });  // never an entry after its exit
+  if(_cur){
+    if(p>_cur.prio){ _stopCur(); _start(it); return; }          // exit cuts entry; entry cuts approach
+    if(p<=2 && _cur.prio>=4){ _outcome(k,seq,'busy'); return; }   // no approach tick on top of a trade cue
+    _q.push(it); if(_q.length>6){ _q.sort((a,b)=>(PRIO[b.k]||1)-(PRIO[a.k]||1)); const d=_q.pop(); _outcome(d.k,d.seq,'dropped'); }
+    return; }
+  _start(it); }
+function _flushLocked(){ if(_locked()||!_pendLocked.length) return;
+  const now=Date.now(); let p=_pendLocked.filter(x=>now-x.t<=120000); _pendLocked=[];
+  const li=p.map(x=>x.k.startsWith('exit')).lastIndexOf(true);
+  if(li>=0) p=p.filter((x,i)=>!(x.k==='entry'&&i<li));      // a whole trade happened: the exit tells it
+  p.filter(x=>!_fbSeqs.has(x.seq)).forEach(x=>playKind(x.k,x.seq,true)); }   // Windows already played it -> skip
+function _sndState(){ if(_muted()) return 'muted'; if(_locked()) return 'locked'; if(Object.keys(_bad).length) return 'bad'; return 'on'; }
+function _sndPill(){ const b=document.getElementById('sndbtn'), st=_sndState();
+  if(b){
+    b.textContent={on:'🔔 sound ON',muted:'🔇 SOUND OFF — click to turn on',locked:'🔒 SOUND LOCKED — click',bad:'⚠ sound file broken'}[st]+(_isLeader?'':' (other tab)');
+    b.title='Click: turn sound OFF / ON (it stays as you set it). If LOCKED, a click only unlocks sound and plays the 09:20 check sound (armed.mp3). Shift-click: hear every cue.'+
+            (Object.keys(_bad).length?(' Broken: '+Object.values(_bad).join(', ')+' — that cue cannot play.'):'')+
+            (_lastSndText?(' Last: '+_lastSndText):'');
+    b.className='pill '+(st==='on'?'snd-on':(st==='muted'?'snd-muted':'snd-bad')); }
+  const bn=document.getElementById('sndbanner');
+  if(bn){ const show=(st==='locked'&&_isLeader)||st==='bad';
+    bn.style.display=show?'block':'none';
+    bn.textContent=st==='locked'?'🔒 SOUND IS LOCKED — click anywhere on this page to turn trade sounds on'+(_pendLocked.length?(' ('+_pendLocked.length+' missed cue'+(_pendLocked.length>1?'s':'')+' will play)'):''):
+                   ('⚠ Sound file broken: '+Object.values(_bad).join(', ')+' — that cue CANNOT play. Check vajra/sounds/.'); }
+  const base='VAJRA 2.0', want=st==='locked'?'🔒 SOUND LOCKED · '+base:(st==='muted'?'🔇 SOUND OFF · '+base:(st==='bad'?'⚠ SOUND · '+base:base));
+  if(document.title!==want) document.title=want;
+  if(_wasLocked!==null && _wasLocked!==_locked()) _beaconNow();
+  _wasLocked=_locked(); }
+(function(){const b=document.getElementById('sndbtn'); if(b) b.onclick=function(ev){
+  ev.stopPropagation();
+  if(_lockedAtDown||_locked()){ _lockedAtDown=false; _unlock(); setTimeout(()=>{ if(!_locked()) playKind('armed',null,true); _sndPill(); },200); return; }   // never changes the mode
+  if(ev.shiftKey){ ['entry','approach_UP','approach_DOWN','exit_profit','exit_loss','feed_alarm','armed'].forEach((k,i)=>setTimeout(()=>playKind(k,null,true),i*3000)); return; }
+  if(_sndOff){ _sndOff=false; _ls('vajra_snd_off','0'); setTimeout(()=>playKind('armed',null,true),150); }
+  else { _sndOff=true; _ls('vajra_snd_off','1'); _stopCur(); _q=[]; }
+  _sndPill(); _beaconNow(); };
+// any click / key anywhere unlocks audio (browser rule: sound needs one user gesture per page load)
+['pointerdown','keydown','touchstart'].forEach(evn=>document.addEventListener(evn,()=>{ _lockedAtDown=_locked(); _unlock(); },true));
+_audioCtx();
+// keep trying: a Chrome window started with --autoplay-policy=no-user-gesture-required resumes at once
+setInterval(()=>{ const c=_audioCtx(); if(c&&c.state==='suspended') c.resume().catch(()=>{}); _isLeader=_leader(); _flushLocked(); _sndPill(); }, 2000);
+})();
+// play every engine sound event exactly once (seq cursor), judged on the BROWSER clock (server offset).
+// Trade cues are kept for 120 s (if a whole trade is late, only its exit plays); approach / feed / armed
+// expire after 20 s. On first load the last 15 s are played, older history is not.
+function consumeSounds(s){
+  if(s.server_ms) _clkOff=Date.now()-s.server_ms;
+  if(s.sounds_rev) _sndRevSeen(s.sounds_rev);
+  if(s.snd_fallback) _fbSeqs=new Set(s.snd_fallback);
+  if(s.boot_id!==undefined && _sndBoot!==null && s.boot_id!==_sndBoot) _sndSeq=0;
+  if(s.boot_id!==undefined) _sndBoot=s.boot_id;
+  const ev=s.sound_events||[]; if(!ev.length){ if(_sndSeq===null) _sndSeq=0; return; }
+  const maxSeq=ev[ev.length-1].seq, nowSrv=Date.now()-_clkOff;
+  if(_sndSeq===null){ const rec=ev.filter(e=>nowSrv-e.ts<=15000);      // first load: only the newest cue of
+    _sndSeq=rec.length?rec[rec.length-1].seq-1:maxSeq; }                 // the last 15 s, never a burst
+  if(maxSeq<_sndSeq) _sndSeq=0;
+  let fresh=ev.filter(e=>e.seq>_sndSeq).map(e=>{ let k=e.kind; if(k==='approach') k=(/upper/i.test(e.text||'')?'approach_UP':'approach_DOWN');
+    return {k,seq:e.seq,age:nowSrv-e.ts,text:e.text}; });
+  const li=fresh.map(x=>x.k.startsWith('exit')).lastIndexOf(true);
+  fresh.forEach((x,i)=>{
+    _lastSndText=new Date(Date.now()-x.age).toLocaleTimeString()+' '+x.k+' — '+(x.text||'');
+    const lim=TRADE_KINDS[x.k]?120000:20000;
+    if(x.age>lim){ _outcome(x.k,x.seq,'stale'); return; }
+    if(x.k==='entry' && i<li && x.age>20000){ _outcome(x.k,x.seq,'stale'); return; }
+    playKind(x.k,x.seq); });
+  _sndSeq=maxSeq; _sndPill(); }
+
+// ---- FEED WATCHDOG — a dead engine or stalled feed must be UNMISSABLE, never a frozen-but-green screen ----
+let _wdLastOk=0,_wdLastRts=null,_wdLastRtsChange=0;
+let _closeHM=15*60+40;   // 2.0.4: F&O close from the engine (regime.closing.session_close); 15:40 under CAS
+const _hmOf=t=>{const x=String(t||'').split(':');return x.length>=2?(+x[0])*60+(+x[1]):null;};
+const todHM=ms=>{const d=new Date(ms);return d.getHours()*60+d.getMinutes();};
+function marketPhase(){const d=new Date();const hm=d.getHours()*60+d.getMinutes();
+  if(hm<9*60+20)return 'preopen'; if(hm>=_closeHM)return 'closed'; return 'open';}
+function applyWatchdog(fetchFailed){
+  // Judged by SERVER round-time, not the wall clock — an evening tape REPLAY has round_ts advancing
+  // and must render normally, never masked by a false SESSION CLOSED.
+  const al=document.getElementById('alert'),icon=document.getElementById('alerticon'),
+        txt=document.getElementById('alerttxt'),rd=document.getElementById('alertrd');
+  const now=Date.now();
+  const noFetch=fetchFailed||(_wdLastOk>0&&now-_wdLastOk>5000);
+  const stalled=(!noFetch&&_wdLastRtsChange>0&&(now-_wdLastRtsChange>5000));
+  if(!noFetch&&!stalled){ document.body.classList.remove('frozen'); return false; }
+  // data has stopped — decide CLOSED (expected, calm) vs FROZEN (a real problem, loud)
+  const endOfDay=_wdLastRts!=null&&todHM(_wdLastRts)>=_closeHM-1;   // last round reached the F&O close
+  if(endOfDay){
+    document.body.classList.remove('frozen');
+    al.className='alert a-closed';icon.textContent='◼';
+    txt.textContent='SESSION CLOSED — last round '+hhmmss(_wdLastRts)+' · tapes closed';rd.textContent='';
+    return true;
+  }
+  al.className='alert a-frozen';icon.textContent='🚨';
+  if(noFetch){
+    txt.textContent='DATA FROZEN — no response from engine · last update '+(_wdLastOk?hhmmss(_wdLastOk):'never');
+    rd.textContent='check the engine terminal';
+  }else{
+    txt.textContent='DATA FROZEN — engine not advancing · last round '+hhmmss(_wdLastRts);
+    rd.textContent='feed stalled or engine hung';
+  }
+  document.body.classList.add('frozen');
+  return true;
+}
+
+// ===== NIFTY HERO PANEL render — call renderNiftyPanel(s.nifty, s.arming, s) every second =====
+function renderNiftyPanel(n, a, s) {
+  n = n || {}; a = a || {}; s = s || {};
+  const f   = (x, d = 2) => x == null ? '—' : Number(x).toFixed(d);
+  const cls = v => v > 0 ? 'up' : (v < 0 ? 'dn' : 'mut');
+  const sgn = v => v > 0 ? '+' : '';
+  const arr = d => (d == null || Math.abs(d) < 1e-9) ? '' : (d > 0 ? '▲' : '▼');
+  const $   = id => document.getElementById(id);
+
+  // spot + delta — if the NIFTY tick ITSELF is stale (feed gap), dim the 46px spot and badge it:
+  // the freshness bar below measures LEVEL age, not tick age, so without this a frozen NIFTY quote
+  // looks perfectly live on the most-trusted panel.
+  const tickStale = !!(s.instruments && s.instruments.NIFTY && s.instruments.NIFTY.stale);
+  $('nspot').textContent = f(n.spot, 2);
+  $('nspot').style.opacity = tickStale ? '.45' : '';
+  $('tickstale').style.display = tickStale ? '' : 'none';
+  const nd = $('ndelta');
+  nd.textContent = (n.delta != null ? arr(n.delta) + ' ' + sgn(n.delta) + f(n.delta) : '');
+  nd.className = 'ndelta ' + cls(n.delta);
+
+  // CE / PE @ ATM strike
+  $('natmce').textContent = f(n.atm_ce);
+  $('natmpe').textContent = f(n.atm_pe);
+  $('natmce_k').textContent = (n.atm ?? '—');
+  $('natmpe_k').textContent = (n.atm ?? '—');
+
+  // secondary stats
+  $('nfut').textContent = f(n.future);
+  $('nfutlbl').textContent = (n.future_mode === 'ACTUAL' ? 'FUT · actual' : 'FUT · implied');
+  const nb = $('nbasis');
+  nb.textContent = (n.basis == null ? '—' : sgn(n.basis) + f(n.basis));
+  nb.className = 'sv ' + cls(n.basis);
+  $('nbasislbl').textContent = (n.basis == null ? 'BASIS' : (n.basis >= 0 ? 'BASIS · prem' : 'BASIS · disc'));
+  $('nvix').textContent = f(n.vix);
+  $('noi').textContent = (n.max_oi_ce ?? '—') + ' / ' + (n.max_oi_pe ?? '—');
+
+  // pin level numbers on band ends
+  $('nlo').textContent = f(n.lower);
+  $('nup').textContent = f(n.upper);
+
+  const du = n.dist_up, dd = n.dist_dn;
+  const haveBand = (n.lower != null && n.upper != null && n.spot != null);
+  const span = haveBand ? ((n.upper - n.lower) || 1) : 1;
+  const card = $('niftycard');
+
+  // spot marker position (clamped to 4%..96% so it never clips the rounded caps)
+  if (haveBand) {
+    const clamped = Math.max(0, Math.min(1, (n.spot - n.lower) / span));
+    $('spotMarker').style.left = (4 + clamped * 92) + '%';
+  }
+
+  // danger state (priority: breach > critical(<=2) > approach(<=5) > safe)
+  let state = 'safe', sideClass = '';
+  const nearest = Math.min(du == null ? 1e9 : du, dd == null ? 1e9 : dd);
+  if (du != null && du <= 0)      { state = 'breach-up'; sideClass = 'up'; }
+  else if (dd != null && dd <= 0) { state = 'breach-dn'; sideClass = 'dn'; }
+  else {
+    const upNear = (du != null && du < (dd == null ? 1e9 : dd));
+    sideClass = upNear ? 'up' : 'dn';
+    // 2.0: thresholds follow the engine's real entry distance (1.x hard-coded 2/5 pts while the
+    // engine entered at 7, so the banner said BUY while this panel still read "safe").
+    const _px = ((window._lastState||{}).arming||{}).proximity_pts || 7;
+    if (nearest <= _px * 0.4)  state = 'critical';
+    else if (nearest <= _px)   state = 'approach';
+    else                   state = 'safe';
+  }
+
+  // single danger banner (one source of truth for proximity + side)
+  const banner = $('nbanner');
+  let btext, bmod;
+  if (state === 'breach-up')      { btext = '▲ BREACHED UPPER +' + f(Math.abs(du)); bmod = 'breach up'; }
+  else if (state === 'breach-dn') { btext = '▼ BREACHED LOWER −' + f(Math.abs(dd)); bmod = 'breach dn'; }
+  else if (state === 'critical')  { btext = (sideClass === 'up' ? '▲' : '▼') + ' ' + f(nearest, 1) + ' PTS — BREACH IMMINENT'; bmod = 'critical ' + sideClass; }
+  else if (state === 'approach')  { btext = (sideClass === 'up' ? '▲' : '▼') + ' ' + f(nearest, 1) + ' PTS — APPROACHING ' + (sideClass === 'up' ? 'UPPER' : 'LOWER'); bmod = 'approach ' + sideClass; }
+  else if (nearest >= 1e8)        { btext = 'waiting for levels'; bmod = 'safe'; }   // no band yet — never print the 1e9 sentinel
+  else                            { btext = f(nearest, 1) + ' PTS TO NEAREST PIN'; bmod = 'safe'; }
+  banner.textContent = btext;
+  banner.className = 'nbanner ' + bmod;
+
+  // per-end distance chips
+  const chip = v => { if (v == null) return '—'; if (v <= 0) return 'BREACH'; return f(v, v < 10 ? 1 : 0) + ' pts'; };
+  $('ndnd').textContent = chip(dd);
+  $('nupd').textContent = chip(du);
+
+  // band hot-side tint + breach/critical card classes
+  card.classList.remove('hot-up', 'hot-dn', 'is-breach', 'is-critical');
+  if (state === 'breach-up' || state === 'breach-dn') card.classList.add('is-breach');
+  else if (state === 'critical') card.classList.add('is-critical');
+  if (sideClass === 'up') card.classList.add('hot-up');
+  else if (sideClass === 'dn') card.classList.add('hot-dn');
+
+  // BUY target (from arming), coloured by lean
+  const buy = $('nbuy'), tgt = a.target;
+  if (tgt && tgt.label) {
+    buy.style.display = '';
+    $('nbuytxt').textContent = tgt.label;
+    buy.className = 'nbuy ' + (a.lean === 'UP' ? 'up' : (a.lean === 'DOWN' ? 'dn' : ''));
+  } else buy.style.display = 'none';
+
+  // arming state pill
+  const pill = $('narm');
+  if (a.state) { pill.style.display = ''; pill.textContent = a.state.replace(/_/g, ' '); pill.className = 'narm s-' + a.state; }
+  else pill.style.display = 'none';
+
+  // calc provenance
+  const C = n.calc, tt = ms => ms ? new Date(ms).toLocaleTimeString() : '—', ci = $('calcinfo');
+  if (!C) ci.innerHTML = '<span class="mut">levels not yet calculated</span>';
+  else ci.innerHTML =
+    'calc <b>' + tt(C.ts) + '</b> <span class="mut">(' + (C.trigger || '') + ')</span> · ' +
+    'CE <b>' + C.k_ce + '</b>@' + f(C.vwap_ce) + ' · PE <b>' + C.k_pe + '</b>@' + f(C.vwap_pe) +
+    ' · <span class="dn">L ' + f(C.lower) + '</span> / <span class="up">U ' + f(C.upper) + '</span>';
+
+  // freshness bar + re-anchor countdown
+  const fbarWrap = $('freshwrap'), fbar = $('freshbar'), flbl = $('freshlbl');
+  if (C && n.held_age_secs != null) {
+    fbarWrap.style.display = '';
+    const h = n.hold_secs || 1200, age = n.held_age_secs;
+    const frac = Math.max(0, Math.min(1, age / h));
+    const left = Math.max(0, h - age);
+    fbar.style.width = (frac * 100) + '%';
+    fbar.style.background = s.levels_stale ? 'var(--dn)' : (frac > 0.85 ? 'var(--dn)' : (frac > 0.5 ? 'var(--acc)' : 'var(--up)'));
+    flbl.textContent = s.levels_stale ? 'STALE · held ' + dur(age) : 'held ' + dur(age) + ' · re-anchor in ' + dur(left);
+    flbl.style.color = s.levels_stale ? 'var(--dn)' : 'var(--mut)';
+  } else fbarWrap.style.display = 'none';
+
+  // stale flag
+  const stale = !!s.levels_stale;
+  $('lvlstale').style.display = stale ? '' : 'none';
+  card.classList.toggle('stale', stale);
+}
+
+function renderWhy(s){
+  const w=document.getElementById('why'), t=document.getElementById('whytxt'), b=document.getElementById('whyband'),
+        fc=document.getElementById('feedchip'); if(!w) return;
+  const idl=s.idle||{}, fh=s.feed_health||{}, rg=s.regime||{};
+  if(fc){ fc.textContent=fh.ok===false?('FEED '+(fh.reason||'BAD')):'feed ok'; fc.className='pill '+(fh.ok===false?'feed-bad':'feed-ok'); }
+  let txt=idl.text||'—', cls='why full';
+  if(idl.gate==='POSITION_ACTIVE'){ cls+=' w-trade'; }
+  else if(idl.gate==='FEED_UNHEALTHY'){ cls+=' w-bad'; }
+  else if(idl.gate && idl.gate!=='NO_APPROACH'){ cls+=' w-block'; }
+  if(idl.nearest_dist!=null && idl.gate!=='POSITION_ACTIVE'){
+    txt+=' · nearest '+(idl.nearest_side||'')+' level '+f(idl.nearest_dist,1)+' pts away ('+f(idl.nearest_pct,2)+'%) · entry fires within '+f(idl.proximity_pts,0)+' pts'; }
+  t.textContent=txt; w.className=cls;
+  let bt='';
+  if(idl.half_width!=null) bt+='band ±'+f(idl.half_width,0)+(idl.legacy_half_width!=null&&idl.band_method==='mtm'?' (1.x would be ±'+f(idl.legacy_half_width,0)+')':'');
+  if(idl.next_reanchor_secs!=null) bt+=' · re-anchor in '+Math.floor(idl.next_reanchor_secs/60)+'m'+String(idl.next_reanchor_secs%60).padStart(2,'0')+'s';
+  bt+=' · trades today '+(rg.entries_today||0);
+  if(rg.last_entry) bt+=' · last entry '+rg.last_entry;
+  if((rg.closing||{}).flatten_before) bt+=' · square-off '+rg.closing.flatten_before;
+  b.textContent=bt;
+}
+function render(s, heavy){
+  window._lastState=s;
+  if(s.round_ts!==_wdLastRts){ _wdLastRts=s.round_ts; _wdLastRtsChange=Date.now(); }
+  const n=s.nifty||{}, a=s.arming||{}, d=s.decision||{}, p=s.position, e=s.expiry||{}, ts=s.trades_summary||{}, cap=s.capital||{};
+  document.getElementById('today').textContent=ts.trades_today||0;
+  document.getElementById('capital').textContent=inr(cap.equity);
+  const cpct=document.getElementById('capitalpct'); cpct.textContent=(cap.pnl_pct!=null?'('+sgn(cap.pnl_pct)+cap.pnl_pct+'%)':''); cpct.className=cls(cap.pnl_pct);
+  document.getElementById('capbreak').innerHTML=(cap.cash!=null?'· cash '+inr(cap.cash)+' / deployed '+inr(cap.deployed)+' / unrl <span class="'+cls(cap.unrealized)+'">'+sgn(cap.unrealized)+inr(cap.unrealized)+'</span>'
+    +(cap.equity_high!=null?' · high '+inr(cap.equity_high)+((cap.dd_pct||0)>0.05?' <span class="dn">−'+f(cap.dd_pct,1)+'%</span>':''):''):'');
+  const lf=document.getElementById('liveflag'); lf.innerHTML='LIVE_ORDERS <b>'+(s.live_orders?'ON':'OFF')+'</b>'; lf.className='pill '+(s.live_orders?'live-on':'live-off');
+  document.getElementById('sdate').innerHTML='date <b>'+(s.session_date||'—')+'</b>';
+  document.getElementById('expiry').innerHTML='expiry <b>'+(e.date||'—')+'</b> '+(e.basis_mode||'');
+  document.getElementById('rmode').innerHTML='routing <b>'+(d.routing_mode||'—')+'</b>';
+  // EXPIRY-DAY regime badge (4/5 panel reviewers: the biggest session fact, sent but never rendered)
+  const xd=document.getElementById('expday');
+  if(e.date){
+    xd.style.display='';
+    if(e.is_expiry_day){ xd.textContent='⚡ EXPIRY DAY'+(e.is_monthly?' · monthly':'')+(e.shifted_from_holiday?' · moved from '+e.shifted_from_holiday+' (holiday)':''); xd.className='pill expday-hot'; }
+    else{ const rg=s.regime||{}; const days=(rg.dte_trading!=null)?rg.dte_trading:
+            Math.round((new Date(e.date)-new Date(s.session_date||e.date))/86400000);
+          xd.textContent='NON-EXPIRY · T-'+days+' trading day'+(days===1?'':'s')+' · '+(rg.band_method||'')+' band';
+          xd.className='pill'; }            // muted: must not look like EXPIRY DAY at a glance (T19)
+  } else xd.style.display='none';
+  // clock + countdown to the F&O close (market time from round_ts, not the wall clock)
+  const _cl=(s.regime||{}).closing||{}; const _chm=_hmOf(_cl.session_close); if(_chm) _closeHM=_chm;
+  let clkTxt=s.round_ts? new Date(s.round_ts).toLocaleTimeString():'—';
+  if(s.round_ts){ const dd=new Date(s.round_ts); const secToClose=_closeHM*60-(dd.getHours()*3600+dd.getMinutes()*60+dd.getSeconds());
+    if(secToClose>0) clkTxt+=' · close in '+dur(secToClose); }
+  if(n.spot_source==='CLOSING_PROXY') clkTxt+=' · closing auction: spot from '+(e.basis_mode==='ACTUAL'?'future':'options')+
+    ' (index '+(n.index_spot!=null?f(n.index_spot,2):'—')+')';
+  document.getElementById('clock').textContent=clkTxt;
+
+  // ---- time-dimension buffers (spot always; premium + trail floor while in a trade) ----
+  if(s.round_ts&&n.spot!=null) bufPush(_spotBuf,s.round_ts,n.spot);
+  if(s.round_ts&&p&&p.last_premium!=null){
+    bufPush(_premBuf,s.round_ts,p.last_premium);
+    const _ns0=p.trail_armed?p.trail_floor:(p.exit_plan||{}).hard_sl;
+    if(_ns0!=null) bufPush(_floorBuf,s.round_ts,_ns0);
+  } else if(!p&&_premBuf.length){ _premBuf=[]; _floorBuf=[]; }
+
+  // cumulative P&L sparkline in the header (floor-supervisor: "the display has amnesia about the day")
+  const _sparkEl=document.getElementById('pnlspark');
+  if(Date.now()-_lastSpark>1000){
+    _lastSpark=Date.now();
+    const _closed=(s.journal||[]).filter(t=>t.status==='CLOSED');
+    if(_closed.length){
+      let cum=0; const pts=[],dots=[];
+      const t00=_closed[0].entry_ts||_closed[0].exit_ts;
+      pts.push({t:t00,v:0});
+      _closed.forEach(t=>{cum+=(t.pnl||0);pts.push({t:t.exit_ts,v:cum});dots.push({t:t.exit_ts,v:cum,c:(t.pnl||0)>=0?'var(--up)':'var(--dn)'});});
+      if(p&&s.round_ts) pts.push({t:s.round_ts,v:cum+(p.unrealized_pnl||0)});
+      const hiV=Math.max(...pts.map(x=>x.v));
+      _pnlSvgCache=sparkSvg(pts,150,26,{hi:hiV,dots:dots,color:(pts[pts.length-1].v>=0?'var(--up)':'var(--dn)')});
+    } else _pnlSvgCache='';
+  }
+  if(_pnlSvgCache){ _sparkEl.style.display=''; _sparkEl.innerHTML=_pnlSvgCache; }
+  else _sparkEl.style.display='none';
+
+  // ALERT banner = THE SCREAM (about to breach / cross-instrument confluence)
+  const al=document.getElementById('alert'); const tgt=a.target; const st=a.state; const cf=a.confluence||{};
+  const cd=s.cooldown||{};
+  let acls,ic,txt;
+  if(cd.stop_cooldown_active){                    // STANDING for the whole 11-min window, highest priority
+    acls='a-cooldown'; ic='⏸';                     // while flat — never hides an open trade (IN_TRADE can't
+    txt='POST-STOP COOLDOWN — '+dur(cd.stop_cooldown_remaining_secs)+' remaining · no new trade until levels recompute';
+  }                                                 // co-occur with a stop cooldown; position is closed to arm it)
+  else if(st==='IN_TRADE'&&p){
+    // include distance-to-stop — the number the operator lives on mid-trade — in the one place the eye rests
+    const _ep=p.exit_plan||{}; const _ns=p.trail_armed?p.trail_floor:_ep.hard_sl;
+    const _dS=(_ns!=null&&p.last_premium!=null)?(p.last_premium-_ns):null;
+    const _lj=(s.journal||[]).find(t=>t.status!=='CLOSED');
+    const _held=(_lj&&s.round_ts)?dur((s.round_ts-_lj.entry_ts)/1000):null;
+    let _flat='';
+    if(s.round_ts){ const _d2=new Date(s.round_ts);
+      const _sf=(15*3600+25*60)-(_d2.getHours()*3600+_d2.getMinutes()*60+_d2.getSeconds());
+      if(_sf>0&&_sf<=600) _flat='  ·  FLATTEN in '+dur(_sf); }
+    acls='a-trade';ic='●';
+    txt='IN TRADE — '+p.direction+' '+p.right+' '+p.strike+'  ·  '+(p.trail_armed?'TRAIL armed · ':'')
+        +'P&L '+inr(p.unrealized_pnl)+(_dS!=null?'  ·  stop in '+f(_dS)+' pts':'')
+        +(_held?'  ·  held '+_held:'')+_flat;
+  }
+  else if(st==='BREACHED'){acls=(a.lean==='UP'?'a-fire':'a-breach');ic='🚨';txt=a.message||'';}
+  else if(st==='ABOUT_TO_BREACH'){acls='a-arm';ic='⚠';txt=a.message||'';}
+  else if(!s.round_ts){
+    // no round yet = live pre-open (rounds only start at 09:20) — this used to render as a
+    // dead-looking idle screen; say plainly what is happening. Keyed on SERVER state, not the wall
+    // clock, so an evening tape replay (round_ts advancing) never shows this.
+    const _lh=s.level_history||[]; const _seeded=_lh.length&&_lh[_lh.length-1].trigger==='prev_close_seed';
+    acls='a-watch';ic='◔';
+    txt='PRE-OPEN — engine live'+(_seeded?' · levels seeded from prev close':'')+' · first calc 09:20 · trading 09:21';
+  }
+  else if(st==='WATCHING'){acls='a-watch';ic='👁';txt=a.message||'';}
+  else {acls='a-watch';ic='●';txt=a.message||'tracking the universe';}
+  al.className='alert '+acls; document.getElementById('alerticon').textContent=ic; document.getElementById('alerttxt').textContent=txt;
+  // banner shows verdict + net pull only; the full same/opp arithmetic lives in THE SCREAM panel
+  document.getElementById('alertrd').textContent=(cf.verdict?cf.verdict.replace('_',' ')
+    +(cf.net_pull!=null?' · net '+(cf.net_pull>=0?'+':'')+f(cf.net_pull,2):''):'');
+  // escalate a feed gap / failed exit DURING an open trade — FLASH, don't whisper (was a 2px outline)
+  const _ev=s.events||[]; const _crit = p && _ev.some(e=>(e.type==='FEED_GAP'||e.type==='EXIT_REJECTED') && s.round_ts!=null && (s.round_ts-(e.ts||0))<=60000);
+  al.classList.toggle('feedcrit',!!_crit);
+  if(_crit){ document.getElementById('alerticon').textContent='🚨'; document.getElementById('alerttxt').textContent='⚠ FEED · '+txt; }
+
+  // PIN-RISK LEVEL HISTORY — every recompute with its time + inputs (newest first)
+  const lh=s.level_history||[];
+  if(heavy) document.getElementById('lvlhsum').innerHTML = lh.length? ('<b>'+lh.length+'</b> recomputes today'):'';
+  if(heavy) document.getElementById('lvlhrows').innerHTML = lh.length? lh.slice().reverse().map(L=>{
+    const band=(L.upper!=null&&L.lower!=null)?f(L.upper-L.lower,1):'—';
+    const tcol=L.trigger==='post_exit'?'acc':(L.trigger==='prev_close_seed'?'mut':'blue');
+    return '<tr><td>'+(L.ts?new Date(L.ts).toLocaleTimeString():'—')+'</td>'+
+      '<td class="'+tcol+'">'+(L.trigger||'')+'</td>'+
+      '<td class="dn">'+f(L.lower)+'</td><td class="up">'+f(L.upper)+'</td><td class="mut">'+band+'</td>'+
+      '<td>'+(L.atm??'—')+'</td>'+
+      '<td class="mut">'+(L.k_ce??'—')+' @ '+f(L.vwap_ce)+'</td>'+
+      '<td class="mut">'+(L.k_pe??'—')+' @ '+f(L.vwap_pe)+'</td>'+
+      '<td class="'+cls(L.basis)+'">'+sgn(L.basis)+f(L.basis)+'</td></tr>';}).join('')
+    : '<tr><td class="mut" colspan="9">no levels calculated yet</td></tr>';
+
+  // NIFTY hero panel (band-as-hero redesign)
+  renderNiftyPanel(n, a, s);
+
+  // spot VELOCITY toward the nearer pin (panel v2: distance without closure-rate understates urgency)
+  const _nv=document.getElementById('nvel');
+  const _rate=bufRate(_spotBuf,60000);
+  if(_rate!=null&&n.dist_up!=null&&n.dist_dn!=null){
+    _nv.style.display='';
+    const upNearer=n.dist_up<n.dist_dn;
+    const dEdge=upNearer?n.dist_up:n.dist_dn;
+    const closing=upNearer?_rate:-_rate;            // + = moving toward the nearer pin
+    if(Math.abs(_rate)<0.5){ _nv.innerHTML='<span class="mut">spot stalled ('+f(_rate,1)+' pts/min)</span>'; }
+    else if(closing>0){
+      const eta=dEdge>0?dEdge/closing:0;
+      _nv.innerHTML='<span class="'+(upNearer?'up':'dn')+'">'+(upNearer?'▲':'▼')+' '+f(Math.abs(_rate),1)
+        +' pts/min toward '+(upNearer?'UPPER':'LOWER')+(dEdge>0&&eta<120?' · ≈'+dur(eta*60)+' at pace':'')+'</span>';
+    } else {
+      _nv.innerHTML='<span class="mut">drifting away from the nearer pin ('+f(_rate,1)+' pts/min)</span>';
+    }
+  } else _nv.style.display='none';
+
+  // THE SCREAM panel — state + target + same/opposite-side confluence
+  const ss=document.getElementById('setupstate'); ss.textContent=(a.state||'—').replace(/_/g,' ');
+  ss.className='big '+(st==='BREACHED'?(a.lean==='DOWN'?'dn':'up'):(st==='ABOUT_TO_BREACH'?'acc':(st==='IN_TRADE'?'blue':'mut')));
+  const lb=document.getElementById('leanbadge');lb.textContent=a.lean||'—';lb.className='badge '+(a.lean==='UP'?'b-up':(a.lean==='DOWN'?'b-dn':'b-neu'));
+  // entry status badge: ENTERED (green) or the rejection reason (red) — why a breach did/didn't fire
+  const es=document.getElementById('entrystatus'); const eb=a.entry_block;
+  if(eb && eb!=='ENTERED'){es.style.display='';es.textContent='BLOCKED: '+eb;es.className='badge b-dn';}
+  else if(eb==='ENTERED'){es.style.display='';es.textContent='ENTERED';es.className='badge b-up';}
+  else{es.style.display='none';}
+  document.getElementById('screamtarget').textContent = tgt?tgt.label.replace('BUY ',''):'—';
+  document.getElementById('screammsg').textContent = a.message||'—';
+  document.getElementById('screammsg').className='arm-msg '+(st==='ABOUT_TO_BREACH'?'acc':'mut');
+  const pbi=cf.pulls_by_instrument||{};
+  const instSpan=(x,c)=>'<span class="'+c+'">'+x+'</span>'+(pbi[x]!=null?' <span class="mut">('+f(pbi[x],2)+')</span>':'');
+  const byPull=(a,b)=>(pbi[b]||0)-(pbi[a]||0);
+  document.getElementById('sameSide').innerHTML = (cf.same_side&&cf.same_side.length)? cf.same_side.slice().sort(byPull).map(x=>instSpan(x,'up')).join(', '):'<span class="mut">none</span>';
+  document.getElementById('oppSide').innerHTML = (cf.opp_side&&cf.opp_side.length)? cf.opp_side.slice().sort(byPull).map(x=>instSpan(x,'dn')).join(', '):'<span class="mut">none</span>';
+  // full pull arithmetic (moved here from the banner, which now shows verdict + net only)
+  if(heavy) document.getElementById('pulltotals').innerHTML = (cf.same_pull!=null||cf.opp_pull!=null)?
+    ('pull: same <span class="up">+'+f(cf.same_pull,2)+'</span> · opp <span class="dn">−'+f(cf.opp_pull,2)+'</span> · net <b class="'+cls(cf.net_pull)+'">'+(cf.net_pull>=0?'+':'')+f(cf.net_pull,2)+'</b>'):'';
+
+  // BURST BOARD
+  const bb=s.burst_board||[];
+  if(heavy) document.getElementById('burstrows').innerHTML=bb.slice(0,14).map(b=>{
+    const near=Math.min(Math.abs(b.dist_up??1e9),Math.abs(b.dist_dn??1e9));
+    // a carried-forward STALE instrument (feed gap) must not read as a live breach: mute the side
+    // coloring, badge it, and dim the row — mirroring the universe table (council: burst board showed stale as live).
+    const stale=!!b.stale;
+    const staleTag=stale?' <span class="badge b-stale" style="font-size:9px;padding:0 4px">STALE</span>':'';
+    const side=stale?'<span class="mut">stale — last known</span>':(b.breached?('BREACHED '+b.breached):((b.dist_up!=null&&Math.abs(b.dist_up)<=Math.abs(b.dist_dn))?'▲ '+f(b.dist_up)+' to upper':'▼ '+f(b.dist_dn)+' to lower'));
+    const hc=b.heat>=0.85?'var(--dn)':(b.heat>=0.6?'var(--acc)':'var(--blue)');
+    return '<tr'+(stale?' style="opacity:.55"':'')+'><td>'+b.instrument+staleTag+'</td><td class="mut">'+f(b.weight,3)+'</td><td>'+f(b.spot)+'</td><td>'+stbadge(b.state)+'</td>'+
+      '<td class="'+((b.breached&&!stale)?stcls(b.state):'mut')+'">'+side+'</td>'+
+      '<td class="heat"><span style="width:'+Math.round(b.heat*100)+'%;background:'+hc+'"></span>'+Math.round(b.heat*100)+'</td></tr>';}).join('');
+
+  // BREACH ALERTS
+  const ba=s.breach_alerts||[];
+  const _agoStr=ms=>{if(!ms)return '';const s=Math.max(0,Math.round((Date.now()-ms)/1000));return s<60?s+'s ago':Math.floor(s/60)+'m'+(s%60)+'s ago';};
+  const _clock=ms=>ms?new Date(ms).toLocaleTimeString():'';
+  // rows arrive newest-breach-first from the engine; the TIME column shows when each broke its level.
+  if(heavy) document.getElementById('breachbox').innerHTML = ba.length? ('<table><thead><tr>'+
+      '<th style="text-align:left">instrument</th><th>state</th><th style="text-align:left">breach</th>'+
+      '<th style="text-align:right">breach time</th></tr></thead><tbody>'+ba.map(b=>{
+    const past=b.breached==='UP'?Math.abs(b.dist_up):Math.abs(b.dist_dn);
+    const when=b.breach_ts?(_clock(b.breach_ts)+' <span class="mut" style="font-size:10px">'+_agoStr(b.breach_ts)+'</span>'):'<span class="mut">—</span>';
+    return '<tr><td><b>'+b.instrument+'</b> <span class="mut">'+f(b.weight,3)+'</span></td>'+
+      '<td>'+stbadge(b.state)+'</td><td class="'+(b.breached==='UP'?'up':'dn')+'">'+(b.breached==='UP'?'▲ broke UPPER':'▼ broke LOWER')+' by '+f(past)+'</td>'+
+      '<td style="text-align:right" class="'+(b.breached==='UP'?'up':'dn')+'">'+when+'</td></tr>';}).join('')+'</tbody></table>')
+    : '<div class="mut" style="padding:8px 2px">none — every instrument is inside its pin-risk band</div>';
+
+  // LIVE EVENTS strip + stale-levels badge
+  const ev=s.events||[];
+  const ecls=t=>(t==='FEED_GAP'||t==='EXIT_REJECTED')?'dn':(t==='ENTRY_REJECTED'||t==='ANOMALY')?'acc':'mut';
+  const eicon=t=>(t==='FEED_GAP'||t==='EXIT_REJECTED')?'🚨':(t==='ENTRY_REJECTED'||t==='ANOMALY')?'⚠':'•';
+  const tt2=ms=>ms?new Date(ms).toLocaleTimeString():'';
+  if(heavy) document.getElementById('eventbox').innerHTML = ev.length? ('<table><tbody>'+ev.slice().reverse().map(e=>
+    '<tr><td class="'+ecls(e.type)+'">'+eicon(e.type)+' <b>'+e.type.replace(/_/g,' ')+'</b>'
+    +((e.count||1)>1?' <span class="badge b-neu">×'+e.count+'</span>':'')
+    +'</td><td class="mut">'+(e.summary||'')+'</td><td class="mut" style="text-align:right">'+tt2(e.ts)+'</td></tr>').join('')+'</tbody></table>')
+    : '<div class="mut" style="padding:8px 2px">none — feed clean, no gaps or rejections</div>';
+  // STALE LEVELS — the events-strip badge (the NIFTY card's own stale styling is in renderNiftyPanel)
+  document.getElementById('stalebadge').style.display = s.levels_stale?'':'none';
+
+  // OPTION CHAIN — OI bars, ATM marker, ITM shading, OI-magnet (max-OI) strikes, bid/ask spread tooltip
+  const ch=s.nifty_chain||[]; let maxoi=1; ch.forEach(r=>{maxoi=Math.max(maxoi,r.ce_oi||0,r.pe_oi||0);});
+  const mce=n.max_oi_ce, mpe=n.max_oi_pe;
+  const spT=(b,a)=>(b!=null&&a!=null&&a>0)?('bid '+f(b)+' / ask '+f(a)+' · spread '+f(a-b)):'';
+  if(heavy) document.getElementById('chainrows').innerHTML=ch.map(r=>{
+    const cew=Math.round(100*(r.ce_oi||0)/maxoi), pew=Math.round(100*(r.pe_oi||0)/maxoi);
+    const ceItm=r.off<0?' itm':'', peItm=r.off>0?' itm':'';
+    const ceMag=(mce!=null&&r.strike===mce)?' mag':'', peMag=(mpe!=null&&r.strike===mpe)?' mag':'';
+    return '<tr class="'+(r.is_atm?'atm':'')+'">'+
+      '<td class="oicell'+ceItm+ceMag+'"><span class="oibar ce" style="width:'+cew+'%"></span>'+i0(r.ce_oi)+(ceMag?' ◀':'')+'</td>'+
+      '<td class="mut'+ceItm+'">'+i0(r.ce_vol)+'</td><td class="mut'+ceItm+'">'+f(r.ce_vwap)+'</td>'+
+      '<td class="dn'+ceItm+'" title="'+spT(r.ce_bid,r.ce_ask)+'">'+f(r.ce_ltp)+'</td>'+
+      '<td class="strike">'+r.strike+(r.is_atm?' ◄':'')+'</td>'+
+      '<td class="up'+peItm+'" title="'+spT(r.pe_bid,r.pe_ask)+'">'+f(r.pe_ltp)+'</td>'+
+      '<td class="mut'+peItm+'">'+f(r.pe_vwap)+'</td><td class="mut'+peItm+'">'+i0(r.pe_vol)+'</td>'+
+      '<td class="oicell'+peItm+peMag+'"><span class="oibar pe" style="width:'+pew+'%"></span>'+i0(r.pe_oi)+(peMag?' ▶':'')+'</td></tr>';}).join('');
+
+  // NIFTY LEAN — bullish/bearish from the OTHER instruments (the bloc relay). PRIMARY signal is the
+  // DIRECTION-INDEPENDENT absolute_net_pull (Σ weighted pull signed by each instrument's OWN up/down
+  // breach), fall back to the decision bias_ewma when there is no active approach. NOTE: do NOT use
+  // net_pull here — it is measured RELATIVE to our trade direction, so it INVERTS the label on a
+  // DOWN setup (the bug that showed 'NIFTY BULLISH' while the bloc was 6-DOWN/1-UP). arming.lean
+  // stays NIFTY's own breach direction in the SCREAM — a different thing.
+  const cfL=(a&&a.confluence)||{}; const np=cfL.absolute_net_pull;
+  const bias=d.bias_ewma||0;
+  const blocSig=(np!=null && Math.abs(np)>1e-6)?np:bias;
+  const lean = blocSig>0?'BULLISH':(blocSig<0?'BEARISH':'NEUTRAL');   // no deadband — reacts to any non-zero pull
+  const nl=document.getElementById('niftylean'); nl.textContent='NIFTY '+lean;
+  nl.className='big '+(blocSig>0?'up':(blocSig<0?'dn':'mut'));
+  const dec=document.getElementById('decision');dec.textContent=d.decision||'—';dec.className='badge '+((d.decision||'').startsWith('FIRE')?'b-up':'b-neu');
+  document.getElementById('bias').textContent=f(bias,4);document.getElementById('bias').className='kvbig '+cls(bias);
+  document.getElementById('thr').textContent=f(d.threshold,2);document.getElementById('conv').textContent=f(d.conviction,3);
+  const bbar=document.getElementById('biasbar');const mag=Math.min(1,Math.abs(bias)/Math.max(0.01,(d.threshold||0.25)*2));bbar.style.width=(mag*100)+'%';bbar.style.background=bias>=0?'var(--up)':'var(--dn)';
+  // the OTHER instruments pulling NIFTY each way (broke their pin-risk levels), heaviest first
+  const board=(s.burst_board||[]);
+  const upi=board.filter(b=>b.breached==='UP'&&!b.stale).sort((x,y)=>(y.weight||0)-(x.weight||0)).map(b=>b.instrument+' '+f(b.weight,3));
+  const dni=board.filter(b=>b.breached==='DOWN'&&!b.stale).sort((x,y)=>(y.weight||0)-(x.weight||0)).map(b=>b.instrument+' '+f(b.weight,3));
+  if(heavy) document.getElementById('leanup').innerHTML = upi.length? upi.map(x=>'<span class="up">'+x+'</span>').join('<br>'):'<span class="mut">none</span>';
+  if(heavy) document.getElementById('leandn').innerHTML = dni.length? dni.map(x=>'<span class="dn">'+x+'</span>').join('<br>'):'<span class="mut">none</span>';
+  document.getElementById('reason').innerHTML = (lean!=='NEUTRAL'? '<b class="'+(blocSig>0?'up':'dn')+'">'+lean+'</b> — watch the '+(blocSig>0?'UPPER':'LOWER')+' NIFTY pin-risk level for the breach' : 'balanced — no clear cross-instrument lean');
+  const flg=v=>v==null?'—':v;
+  // decision-rationale chips (panel v2: the engine's own WHY was assembled, sent, and silently dropped)
+  const _ch=(d.channels||[]);
+  const _why=(d.reason?'<span class="badge b-neu" style="margin-left:6px">'+String(d.reason).replace(/_/g,' ')+'</span>':'')
+    +(_ch.length?' <span class="badge b-neu" title="'+_ch.join(', ')+'">ch '+_ch.length+'</span>':'')
+    +(d.lead?' <span class="badge b-arm">LEAD</span>':'');
+  document.getElementById('flags').innerHTML='divergence <b class="'+(d.divergence?'dn':'mut')+'">'+flg(d.divergence)+'</b> · reversal_freeze <b class="'+(d.reversal_freeze?'dn':'mut')+'">'+flg(d.reversal_freeze)+'</b> · expiry_gate <b class="'+(d.expiry_gate?'up':'dn')+'">'+flg(d.expiry_gate)+'</b>'+_why;
+
+  // POSITION — exit mode, entry→peak→now, partial qty, distance to the next stop, exit ladder
+  document.getElementById('position').innerHTML = !p ? (function(){
+    // flat: say WHEN we went flat and HOW — eliminates the clock math the operator did from journal times
+    const _done=(s.journal||[]).filter(t=>t.status==='CLOSED');
+    if(!_done.length) return '<div class="mut">flat — no open position</div>';
+    const _le=_done[_done.length-1];
+    const _ago=(s.round_ts&&_le.exit_ts)?dur((s.round_ts-_le.exit_ts)/1000):null;
+    return '<div class="mut">flat'+(_ago?' <b>'+_ago+'</b>':'')+' · last exit <span class="'+((_le.pnl||0)>=0?'up':'dn')+'">'
+      +(_le.exit_reason||'—')+' '+sgn(_le.pnl)+inr(_le.pnl)+'</span> @ '+hhmmss(_le.exit_ts)+'</div>';
+  })() : (function(){
+    const ep=p.exit_plan||{};
+    const mode = p.trail_armed?['TRAILING','up']:((p.last_premium<=p.entry_fill*0.97)?['HARD-STOP NEAR','dn']:['ARMING (trails at +10%)','mut']);
+    const nextStop = p.trail_armed?p.trail_floor:ep.hard_sl;
+    const dStop = nextStop!=null?(p.last_premium-nextStop):null;
+    const urg=v=>v==null?'mut':(v<2?'dn':(v<=5?'acc':'up'));
+    const fromPeak=(p.peak_premium-p.last_premium)*p.qty_remaining;
+    const partial = p.qty_remaining<p.qty_total;
+    // distance-to-stop is the number the operator lives on mid-trade -> promoted to headline size
+    // + panel v2 additions: premium closure-rate toward the stop, time-in-trade, uP&L as % of entry,
+    //   and a premium-vs-stop microchart (the derivative the big number lacks).
+    const premRate=bufRate(_premBuf,60000);
+    let velTxt='';
+    if(premRate!=null&&dStop!=null){
+      if(premRate<-0.05){ const eta=dStop/(-premRate);
+        velTxt='<span class="dn">closing '+f(-premRate,1)+'/min'+(eta<60?' · ≈'+dur(eta*60)+' to stop':'')+'</span>'; }
+      else if(premRate>0.05){ velTxt='<span class="up">moving away +'+f(premRate,1)+'/min</span>'; }
+      else velTxt='<span class="mut">premium flat</span>';
+    }
+    const _lj2=(s.journal||[]).find(t=>t.status!=='CLOSED');
+    const heldTxt=(_lj2&&s.round_ts)?dur((s.round_ts-_lj2.entry_ts)/1000):'—';
+    const upnlPct=(p.entry_fill&&p.last_premium!=null)?((p.last_premium/p.entry_fill-1)*100):null;
+    const chart=(_premBuf.length>2)?('<svg width="220" height="40" viewBox="0 0 220 40" style="display:block;margin-top:6px">'
+      +sparkSvg(_premBuf,220,40,{floor:_floorBuf,color:(upnlPct!=null&&upnlPct>=0?'var(--up)':'var(--dn)')})+'</svg>'):'';
+    return '<div class="row"><div class="big '+(p.direction==='UP'?'up':'dn')+'">'+p.direction+' '+p.right+' '+p.strike+'</div>'+
+      '<div class="kv"><span class="big '+urg(dStop)+'" style="font-size:26px">'+(dStop!=null?f(dStop)+' pts':'—')+'</span><span class="k">TO NEXT STOP @ '+(nextStop!=null?f(nextStop):'—')+(velTxt?' · ':'')+'</span>'+(velTxt?'<span style="font-size:11px">'+velTxt+'</span>':'')+'</div>'+
+      '<div class="kv"><span class="v '+mode[1]+'">'+mode[0]+'</span><span class="k">EXIT MODE</span></div>'+
+      '<div class="kv"><span class="v">'+heldTxt+'</span><span class="k">TIME IN TRADE</span></div>'+
+      '<div class="kv"><span class="v">'+p.qty_remaining+'/'+p.qty_total+(partial?' <span class="acc">partial</span>':'')+'</span><span class="k">'+p.lots+' lots · qty</span></div>'+
+      '<div class="kv"><span class="v">'+f(p.entry_fill)+' → <span class="acc">'+f(p.peak_premium)+'</span> → '+f(p.last_premium)+'</span><span class="k">ENTRY → PEAK → NOW</span></div>'+
+      '<div class="kv"><span class="v '+cls(p.unrealized_pnl)+'">'+sgn(p.unrealized_pnl)+inr(p.unrealized_pnl)
+        +(upnlPct!=null?' <span style="font-size:11px">('+sgn(upnlPct)+f(upnlPct,1)+'%)</span>':'')+'</span><span class="k">UNREALIZED P&L · % OF ENTRY</span></div>'+
+      '<div class="kv"><span class="v '+(fromPeak>0?'dn':'mut')+'">'+(fromPeak>0?'-'+inr(fromPeak):'—')+'</span><span class="k">GIVEN FROM PEAK</span></div>'+
+      '<div class="kv"><span class="v '+(p.trail_armed?'up':'mut')+'">'+(p.trail_armed?f(p.trail_floor):'arming')+'</span><span class="k">TRAIL FLOOR</span></div>'+
+      '<div class="kv"><span class="v mut">'+inr(p.cost)+'</span><span class="k">DEPLOYED</span></div></div>'+
+      chart+
+      '<div class="leg">exit ladder — <span class="dn">hard SL '+f(ep.hard_sl)+'</span> · trail arms at +10% '+f(ep.trail_activate)+' · <span class="up">min-profit floor +7% '+f(ep.min_profit)+'</span>'+(chart?' · chart: premium vs <span class="dn">stop line</span> (last 5m)':'')+'</div>';
+  })();
+
+  // TRADE JOURNAL — one row per round-trip (entry → exit), newest first (#3)
+  const _stk = ts.streak>0?('<b class="up">+'+ts.streak+'W</b>'):(ts.streak<0?('<b class="dn">'+Math.abs(ts.streak)+'L</b>'):'<b class="mut">—</b>');
+  if(heavy) document.getElementById('blotsum').innerHTML='today <b>'+(ts.trades_today||0)+'</b> · <b>'+(ts.closed||0)+'</b> closed · W/L <b class="up">'+(ts.wins||0)+'</b>/<b class="dn">'+(ts.losses||0)+'</b> ('+f(ts.win_rate_pct,0)+'%) · streak '+_stk+' · avg <span class="up">+'+inr(ts.avg_win)+'</span>/<span class="dn">'+inr(ts.avg_loss)+'</span> · realized <b class="'+cls(ts.realized_pnl)+'">'+sgn(ts.realized_pnl||0)+inr(ts.realized_pnl||0)+'</b>';
+  const exitcls=r=>(r==='TRAIL_SL')?'up':(r==='SL_HIT'?'dn':((r==='EXPIRY_FLATTEN'||r==='END_OF_SESSION')?'blue':'mut'));
+  const jr=(s.journal||[]); if(heavy) document.getElementById('blotrows').innerHTML = jr.length? jr.slice().reverse().map(t=>{
+    const sidec=t.direction==='UP'?'up':'dn';
+    const live=t.status!=='CLOSED';
+    const tout=live?'<span class="acc">live</span>':new Date(t.exit_ts).toLocaleTimeString();
+    const exitp=t.exit_price==null?'—':f(t.exit_price)+(live?' *':'');
+    const vc=t.verdict==='CONFLICTED'?'dn':(t.verdict==='STRONG'?'up':(t.verdict==='MILD'?'acc':'mut'));
+    const conf=t.verdict? '<span class="'+vc+'">'+t.verdict+'</span> <span class="mut">'+((t.same_side||[]).length)+'↑'+(t.conflicted?(' / '+(t.opp_side||[]).length+'↓'):'')+'</span>' : '-';
+    const reason=live?'<span class="mut">open</span>':'<span class="'+exitcls(t.exit_reason)+'">'+(t.exit_reason||'-')+'</span>';
+    return '<tr class="'+(live?'live-trade':'')+'"><td>'+new Date(t.entry_ts).toLocaleTimeString()+'</td><td>'+tout+'</td>'+
+      '<td><span class="'+sidec+'">'+t.direction+' '+t.right+'</span></td><td>'+t.strike+'</td><td>'+t.lots+'</td>'+
+      '<td>'+f(t.entry_price)+'</td><td>'+exitp+'</td>'+
+      '<td class="'+cls(t.pnl_pct)+'"><b>'+sgn(t.pnl_pct)+f(t.pnl_pct,1)+'%</b></td>'+
+      '<td class="'+cls(t.pnl)+'">'+sgn(t.pnl)+inr(t.pnl)+'</td><td>'+reason+'</td><td>'+conf+'</td></tr>';}).join('')
+    : '<tr><td class="mut" colspan="11">no trades yet today</td></tr>';
+
+  // UNIVERSE — STOCK badge + N/A levels for non-index (replay: only NIFTY/indices are real), proximity color, age
+  const inss=Object.entries(s.instruments||{}).sort((x,y)=>(y[1].weight||0)-(x[1].weight||0));
+  if(heavy) document.getElementById('urows').innerHTML=inss.map(([k,i])=>{
+    const stock=(i.is_index===false);
+    const noLev=(i.upper==null||i.lower==null);
+    const tag=stock?' <span class="badge b-neu" style="font-size:9px;padding:0 4px">STOCK</span>':'';
+    // feed-gapped this round -> carried last-known (or N/A); flag it so it is never read as live.
+    const staleTag=i.stale?' <span class="badge b-stale" style="font-size:9px;padding:0 4px">STALE</span>':'';
+    const age=(i.freshness_age_secs!=null&&!noLev)?' <span class="mut" style="font-size:9px">'+Math.round(i.freshness_age_secs)+'s</span>':'';
+    const NA='<span class="mut">N/A</span>';
+    const proxU=v=>v==null?'mut':(v<=0?'up':(v<=7?'acc':'mut'));
+    const proxD=v=>v==null?'mut':(v<=0?'dn':(v<=7?'acc':'mut'));
+    return '<tr'+(i.stale?' style="opacity:.55"':'')+'><td>'+k+tag+staleTag+'</td><td class="mut">'+f(i.weight,3)+'</td><td>'+f(i.spot)+'</td>'+
+      '<td class="'+cls(i.delta)+'">'+arr(i.delta)+sgn(i.delta)+f(i.delta)+'</td><td class="mut">'+f(i.future)+'</td><td class="'+cls(i.basis)+'">'+sgn(i.basis)+f(i.basis,2)+'</td>'+
+      '<td>'+(noLev?NA:f(i.lower))+'</td><td>'+(noLev?NA:f(i.upper))+'</td>'+
+      '<td class="'+proxU(i.dist_up)+'">'+(noLev?'—':f(i.dist_up))+'</td><td class="'+proxD(i.dist_dn)+'">'+(noLev?'—':f(i.dist_dn))+'</td>'+
+      '<td>'+stbadge(i.state)+age+'</td><td class="'+cls(i.dir)+'">'+(i.dir>0?'+1':(i.dir<0?'-1':'0'))+'</td><td>'+f(i.strength,2)+'</td><td>'+f(i.vol_ratio,2)+'</td></tr>';}).join('');
+
+  // ---- SOUNDS (2.0): engine-issued events only ----
+  consumeSounds(s);
+  renderWhy(s);
+
+  // watchdog LAST — it may override the banner (frozen / stalled / session-closed / pre-open handled above)
+  applyWatchdog(false);
+  _sndPill();
+}
+
+// ==== 2.0 DATA PATH: server PUSH (SSE) with coalesced repaint; polling only as a fallback ====
+let _full={}, _pending=null, _raf=false, _lastHeavy=0, _lagMs=null, _es=null, _sseFails=0, _pollTimer=null, _lastMsgAt=0, _heavyDue=false;
+function _onState(s, isFull){
+  _wdLastOk=Date.now();
+  if(s.server_ms) _lagMs=Date.now()-s.server_ms;
+  if(s.round_ts!==_wdLastRts){ _wdLastRts=s.round_ts; _wdLastRtsChange=Date.now(); }
+  _lastMsgAt=Date.now(); if(isFull) _heavyDue=true;
+  if(isFull) _full=s; else _full=Object.assign({}, _full, s);
+  consumeSounds(_full);                       // sounds NEVER wait for a repaint (works in background tabs)
+  // 2.0.3: on 21 Oct the audio was suspended for 3.5 min while the window was hidden; retry from the
+  // stream (not a throttled timer), and keep the beacon flowing even when the window is minimised.
+  try{ if(_ctx && _ctx.state==='suspended') _ctx.resume().catch(()=>{}); }catch(e){}
+  if(Date.now()-_lastBeaconAt>=10000 && typeof _sendBeacon==='function') _sendBeacon();
+  _pending=_full;
+  if(!_raf){ _raf=true; requestAnimationFrame(_paint);
+             setTimeout(()=>{ if(_raf) _paint(); }, 400); }   // rAF is paused in hidden tabs
+}
+function _paint(){
+  if(!_raf||!_pending) { _raf=false; return; }
+  _raf=false; const s=_pending; _pending=null;
+  // heavy tables repaint when a FULL payload has arrived (in step with the 1 s full push), or after 2 s
+  const now=Date.now(), heavy=_heavyDue||(now-_lastHeavy)>=2000; if(heavy){ _lastHeavy=now; _heavyDue=false; }
+  const t0=performance.now();
+  try{ render(s, heavy); }catch(e){ console.error('render', e); }
+  const lp=document.getElementById('lagpill');
+  if(lp){ let ms=_lagMs==null?null:Math.max(0,_lagMs);
+    // engine round -> this browser (same machine clock in live mode); replay rounds are historic, skip
+    if(s.round_ts && Math.abs(now-s.round_ts)<60000) ms=Math.max(ms||0, now-s.round_ts);
+    lp.textContent=(_es?'live ':'poll ')+(ms==null?'—':ms+' ms')+' · paint '+Math.round(performance.now()-t0)+' ms';
+    lp.className='pill '+(ms==null?'':(ms<500?'feed-ok':(ms<2000?'snd-muted':'feed-bad'))); }
+}
+function _startSSE(){
+  if(!window.EventSource){ _startPoll(); return; }
+  _es=new EventSource('/api/stream');
+  _es.addEventListener('full', ev=>{ _sseFails=0; try{ _onState(JSON.parse(ev.data), true); }catch(e){} });
+  _es.addEventListener('hot',  ev=>{ _sseFails=0; try{ _onState(JSON.parse(ev.data), false); }catch(e){} });
+  _es.addEventListener('beat', ev=>{ _wdLastOk=Date.now(); _lastMsgAt=Date.now(); try{ const b=JSON.parse(ev.data); _lagMs=Date.now()-b.server_ms; _clkOff=Date.now()-b.server_ms; if(b.sounds_rev) _sndRevSeen(b.sounds_rev); }catch(e){}
+                                     if(_full.round_ts) { _pending=_full; if(!_raf){_raf=true; requestAnimationFrame(_paint);} } });
+  // a non-200 / closed stream never retries by itself (readyState CLOSED) -> fall back at once (T05)
+  _es.onerror=()=>{ _sseFails++; if(_sseFails>=5 || (_es && _es.readyState===2)){ try{_es.close();}catch(e){} _es=null; _startPoll(); }
+                    else applyWatchdog(true); };
+}
+function _startPoll(){                         // fallback: old behaviour, but guarded
+  if(_pollTimer) return; let busy=false;
+  _pollTimer=setInterval(async()=>{ if(busy) return; busy=true;
+    try{ const s=await (await fetch('/api/state')).json(); _onState(s, true); }
+    catch(e){ applyWatchdog(true); _sndPill(); }
+    finally{ busy=false; } }, 500);
+  setTimeout(()=>{ if(!_es){ clearInterval(_pollTimer); _pollTimer=null; _sseFails=0; _startSSE(); } }, 30000);  // try push again
+}
+// ---- 2.0.1 client beacon: what THIS browser painted and played, every 10 s -> client_tape.jsonl ----
+const _cb={paints:0, rounds:0, lastRts:null, sounds:[], sseReconnects:0, pollMode:0, maxLag:0, lagSum:0, lagN:0, boot:Date.now()};
+(function(){ const orr=render; render=function(s,h){ _cb.paints++; if(s&&s.round_ts&&s.round_ts!==_cb.lastRts){ _cb.rounds++; _cb.lastRts=s.round_ts; }
+  if(_lagMs!=null){ _cb.maxLag=Math.max(_cb.maxLag,_lagMs); _cb.lagSum+=_lagMs; _cb.lagN++; } return orr(s,h); };
+  const op=playKind; playKind=function(k,q,f){ if(!f) _cb.sounds.push([Date.now(),k]); return op(k,q,f); }; })();
+function _sndHealth(){ return {on:!_muted()&&!_locked(), muted:_muted(), locked:_locked(),
+  leader:_isLeader, ctx:_ctx?_ctx.state:'none', bad:Object.keys(_bad), loaded:Object.keys(_buf), rev:_sndRev}; }
+_beaconNow=function(){ try{ fetch('/api/client',{method:'POST',headers:{'Content-Type':'application/json'},
+  body:JSON.stringify({now:true, snd:_sndHealth(), snd_outcomes:_outcomes.slice(-20), boot_id:_sndBoot}),keepalive:true}).catch(()=>{}); }catch(e){} };
+setTimeout(()=>_beaconNow(), 1500);           // tell the engine at once that a page is listening
+// 2.0.3 (21 Oct tape): a hidden/minimised window gets its timers throttled to once a minute by Chrome,
+// so the beacon is ALSO driven by the data stream (which is never throttled): at most one per 10 s.
+let _lastBeaconAt=0;
+function _sendBeacon(){ _lastBeaconAt=Date.now(); const b={paints:_cb.paints, rounds:_cb.rounds, last_round_ts:_cb.lastRts, sounds:_cb.sounds.splice(0),
+    mode:(_es?'sse':'poll'), snd_mode:_sndState(), snd:_sndHealth(), snd_outcomes:_outcomes.splice(0), locked:_locked(), hidden:document.hidden, max_lag_ms:Math.round(_cb.maxLag),
+    avg_lag_ms:_cb.lagN?Math.round(_cb.lagSum/_cb.lagN):null, snd_seq:_sndSeq, boot_id:_sndBoot, page_up_s:Math.round((Date.now()-_cb.boot)/1000)};
+  _cb.paints=0; _cb.rounds=0; _cb.maxLag=0; _cb.lagSum=0; _cb.lagN=0;
+  try{ fetch('/api/client',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b),keepalive:true}).catch(()=>{}); }catch(e){} }
+setInterval(()=>{ if(Date.now()-_lastBeaconAt>=9500) _sendBeacon(); }, 10000);
+_startSSE();
+setInterval(()=>{ applyWatchdog(false); _sndPill();
+  // stream open but silent > 6 s (beats come every 2 s) -> it is dead: switch to polling (T05)
+  if(_es && _lastMsgAt && Date.now()-_lastMsgAt>6000){ try{_es.close();}catch(e){} _es=null; _startPoll(); }
+  const lp=document.getElementById('lagpill');
+  if(lp && _lastMsgAt && Date.now()-_lastMsgAt>3000){ lp.textContent='NO DATA '+Math.round((Date.now()-_lastMsgAt)/1000)+' s'; lp.className='pill feed-bad'; }
+}, 1000);   // watchdog keeps judging even with no messages
+</script>
+</body></html>

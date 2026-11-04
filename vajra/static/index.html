@@ -1,0 +1,305 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>VAJRA 2.0</title>
+<link rel="stylesheet" href="/static/styles.css"/>
+</head>
+<body>
+<div id="sndbanner" role="alert"></div>
+
+<!-- ============ HEADER ============ -->
+<header class="hdr" id="hdr">
+  <div class="brand">
+    <span class="brand-mark">VAJRA</span>
+    <span class="brand-sub"><span id="hdr-mode">paper</span> · <span id="ch-date">—</span></span>
+  </div>
+
+  <div class="cap" id="cap">
+    <div class="cap-eq"><span class="cap-lbl">EQUITY</span><span class="cap-val num" id="cap-equity">—</span></div>
+    <div class="cap-pnl num" id="cap-pnl">—</div>
+    <div class="cap-sub" id="cap-sub" title="liquid cash · deployed in the open position · drawdown from the session equity high">cash — · deployed — · dd —</div>
+  </div>
+
+  <div class="chips" id="hdr-chips">
+    <span class="chip" id="ch-trades" title="trades today">trades —</span>
+    <span class="chip" id="ch-expiry" title="expiry · basis mode">expiry —</span>
+    <span class="chip" id="ch-regime" title="regime · trading days to expiry (T-n) · band method (mtm = mark-to-market pain level, legacy = 1.x)">—</span>
+    <span class="chip" id="ch-routing" title="routing mode">routing —</span>
+    <span class="chip" id="ch-feed" title="NIFTY feed health">FEED —</span>
+    <span class="chip hid" id="ch-ws" title="broker socket">WS —</span>
+    <span class="chip hid" id="ch-power" title="machine power">POWER —</span>
+  </div>
+
+  <div class="hdr-right">
+    <button type="button" id="sndbtn" class="pill" aria-pressed="true">🔔 sound</button>
+    <span id="lagpill" class="pill">live —</span>
+    <div class="clock">
+      <span class="clock-time num" id="clock">--:--:--</span>
+      <span class="clock-sub" id="clock-sub" title="engine round time, IST (machine clock) · countdown to regime session_close">close in —</span>
+    </div>
+  </div>
+</header>
+
+<!-- ============ THE SCREAM (alert banner) ============ -->
+<section id="scream" class="scream st-preopen" role="status">
+  <div class="scream-main">
+    <span class="scream-glyph" id="scream-glyph">·</span>
+    <span class="scream-text" id="scream-text" aria-live="polite" aria-atomic="true">PRE-OPEN</span>
+  </div>
+  <div class="scream-side" id="scream-side"></div>
+</section>
+
+<!-- ============ WHY NO TRADE ============ -->
+<section id="wnt" class="wnt">
+  <div class="wnt-gate"><span class="wnt-k">WHY NO TRADE</span><span class="wnt-text" id="wnt-text">—</span><span class="wnt-code" id="wnt-code" title="engine gate code (idle.gate)"></span></div>
+  <div class="wnt-cells">
+    <div class="cell"><span class="k">nearest level</span><span class="v num" id="wnt-nearest">—</span></div>
+    <div class="cell optional"><span class="k" title="entry fires inside this many points of a level">entry proximity</span><span class="v num" id="wnt-prox">—</span></div>
+    <div class="cell"><span class="k" title="half the distance between the lower and upper pin levels">band half-width</span><span class="v num" id="wnt-band">—</span></div>
+    <div class="cell"><span class="k">next re-anchor</span><span class="v num" id="wnt-reanchor">—</span></div>
+    <div class="cell"><span class="k">trades today</span><span class="v num" id="wnt-trades">—</span></div>
+    <div class="cell"><span class="k">last entry</span><span class="v num" id="wnt-lastentry">—</span></div>
+    <div class="cell optional"><span class="k" title="regime flatten_before">square-off</span><span class="v num" id="wnt-squareoff">—</span></div>
+  </div>
+</section>
+
+<main class="grid" id="main">
+
+  <!-- ============ NIFTY HERO ============ -->
+  <section class="panel hero" id="hero">
+    <div class="panel-head">
+      <h2>NIFTY</h2>
+      <div class="badges" id="hero-badges">
+        <span class="badge b-src" id="hero-src"></span>
+        <span class="badge b-warn hid" id="hero-levels-stale">LEVELS STALE</span>
+        <span class="badge b-warn hid" id="hero-tick-stale">TICK STALE</span>
+      </div>
+    </div>
+
+    <div class="hero-spot">
+      <div class="spot-num num" id="spot">—</div>
+      <div class="spot-delta num" id="spot-delta">—</div>
+      <div class="danger d-safe" id="danger">—</div>
+    </div>
+
+    <div class="band" id="band">
+      <div class="band-track">
+        <div class="band-zone" id="band-zone"></div>
+        <div class="band-spot" id="band-spot"><span class="band-spot-lbl num" id="band-spot-lbl"></span></div>
+      </div>
+      <div class="band-ends">
+        <div class="band-end lo"><span class="k">LOWER</span><span class="v num" id="band-lower">—</span><span class="d num" id="band-dn">—</span></div>
+        <div class="band-end hi"><span class="d num" id="band-up">—</span><span class="v num" id="band-upper">—</span><span class="k">UPPER</span></div>
+      </div>
+    </div>
+
+    <div class="buy hid" id="buy">
+      <span class="buy-k" id="buy-k">BUY</span><span class="buy-v" id="buy-text">—</span>
+    </div>
+
+    <div class="hero-stats">
+      <div class="stat"><span class="k">ATM <span id="atm-strike">—</span></span><span class="v num"><b class="ce">CE</b> <span id="atm-ce">—</span> <b class="pe">PE</b> <span id="atm-pe">—</span></span></div>
+      <div class="stat"><span class="k">FUTURE <span id="fut-mode"></span></span><span class="v num" id="fut">—</span></div>
+      <div class="stat"><span class="k">BASIS</span><span class="v num" id="basis">—</span></div>
+      <div class="stat"><span class="k">INDIA VIX</span><span class="v num" id="vix">—</span></div>
+      <div class="stat"><span class="k">OI MAGNETS</span><span class="v num" id="magnets">—</span></div>
+      <div class="stat"><span class="k" title="band method · half-width (mtm = mark-to-market pain level; 1.x = the legacy band)">BAND</span><span class="v num" id="band-method">—</span></div>
+    </div>
+
+    <div class="fresh">
+      <div class="fresh-row">
+        <span class="k" title="how long the current NIFTY levels have been held of the hold window">LEVEL HOLD</span>
+        <span class="v num" id="fresh-text">—</span>
+        <span class="v num mut" id="fresh-reanchor"></span>
+      </div>
+      <div class="fresh-bar"><div class="fresh-fill" id="fresh-fill"></div></div>
+      <div class="prov mut" id="prov">levels: —</div>
+    </div>
+  </section>
+
+  <!-- ============ RIGHT COLUMN ============ -->
+  <div class="col-right">
+
+    <section class="panel sc" id="sc">
+      <div class="panel-head">
+        <h2>THE SCREAM</h2>
+        <div class="badges">
+          <span class="badge" id="sc-lean">—</span>
+          <span class="badge hid" id="sc-block">—</span>
+        </div>
+      </div>
+      <div class="sc-state" id="sc-state">—</div>
+      <div class="sc-msg" id="sc-msg">—</div>
+      <div class="sc-conf">
+        <div class="sc-row"><span class="k" title="STRONG = weighted bloc agrees · MILD = some agree · LONE = NIFTY alone · CONFLICTED = both sides pulling">verdict</span><span class="v" id="sc-verdict">—</span></div>
+        <div class="sc-row"><span class="k same" title="instruments pulling the same way as the lean">▲ same side</span><span class="v" id="sc-same">—</span><span class="v num" id="sc-same-pull"></span></div>
+        <div class="sc-row"><span class="k opp" title="instruments pulling against the lean">▼ opposite</span><span class="v" id="sc-opp">—</span><span class="v num" id="sc-opp-pull"></span></div>
+        <div class="sc-row"><span class="k" title="rel = relative to the lean direction (gating) · abs = signed UP(+)/DOWN(−) bloc pull">net pull</span><span class="v num" id="sc-net">—</span></div>
+      </div>
+    </section>
+
+    <section class="panel pos" id="pos">
+      <div class="panel-head">
+        <h2>POSITION</h2>
+        <div class="badges">
+          <span class="badge hid" id="pos-mode">—</span>
+          <span class="badge hid" id="pos-time">—</span>
+        </div>
+      </div>
+      <div class="pos-flat num" id="pos-flat">FLAT</div>
+      <div class="pos-open hid" id="pos-open">
+        <div class="ticket num" id="pos-ticket" title="the mirror ticket to type into ICICI">—</div>
+        <div class="pos-top">
+          <div class="pos-dir" id="pos-dir">—</div>
+          <div class="pos-stop">
+            <span class="k">to next stop</span>
+            <span class="v num" id="pos-stopdist">—</span>
+            <span class="s num" id="pos-stopat">—</span>
+          </div>
+        </div>
+        <div class="pos-pnl">
+          <span class="v num" id="pos-pnl">—</span>
+          <span class="s num" id="pos-pnlpct">—</span>
+        </div>
+        <div class="pos-prem num">
+          <span class="k">entry</span><span id="pos-entry">—</span>
+          <span class="arr">→</span>
+          <span class="k">peak</span><span id="pos-peak">—</span>
+          <span class="arr">→</span>
+          <span class="k">now</span><span id="pos-now">—</span>
+        </div>
+        <svg class="spark" id="pos-spark" viewBox="0 0 320 64" preserveAspectRatio="none" aria-hidden="true"></svg>
+        <div class="pos-grid">
+          <div class="cell"><span class="k" title="premium given back from the trade peak">given from peak</span><span class="v num" id="pos-given">—</span></div>
+          <div class="cell"><span class="k">trail floor</span><span class="v num" id="pos-floor">—</span></div>
+          <div class="cell"><span class="k">qty · lots</span><span class="v num" id="pos-qty">—</span></div>
+          <div class="cell"><span class="k">deployed</span><span class="v num" id="pos-deployed">—</span></div>
+          <div class="cell"><span class="k">hard SL</span><span class="v num" id="pos-hsl">—</span></div>
+          <div class="cell"><span class="k">trail activate</span><span class="v num" id="pos-tact">—</span></div>
+          <div class="cell"><span class="k">min profit</span><span class="v num" id="pos-minp">—</span></div>
+          <div class="cell"><span class="k">realised (this trade)</span><span class="v num" id="pos-real">—</span></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel lean" id="lean">
+      <div class="panel-head">
+        <h2>NIFTY LEAN</h2>
+        <div class="badges">
+          <span class="badge" id="lean-decision">—</span>
+          <span class="badge b-warn hid" id="lean-div">DIVERGENCE</span>
+          <span class="badge b-warn hid" id="lean-rev">REVERSAL FREEZE</span>
+          <span class="badge b-mut hid" id="lean-gate">EXPIRY GATE</span>
+        </div>
+      </div>
+      <div class="lean-main">
+        <div class="lean-label" id="lean-label">—</div>
+        <div class="lean-val num" id="lean-val">—</div>
+      </div>
+      <div class="bias"><div class="bias-zero"></div><div class="bias-fill" id="bias-fill"></div></div>
+      <div class="lean-rows">
+        <div class="sc-row"><span class="k up">pulling up</span><span class="v" id="lean-up">—</span></div>
+        <div class="sc-row"><span class="k dn">pulling down</span><span class="v" id="lean-dn">—</span></div>
+        <div class="sc-row"><span class="k">reason</span><span class="v" id="lean-reason">—</span></div>
+      </div>
+    </section>
+
+  </div>
+
+  <!-- ============ TRADE JOURNAL ============ -->
+  <section class="panel wide" id="journal">
+    <div class="panel-head">
+      <h2>TRADE JOURNAL</h2>
+      <svg class="spark-cum" id="jr-spark" viewBox="0 0 220 28" preserveAspectRatio="none" aria-hidden="true"></svg>
+      <div class="summary num" id="jr-summary">no closed trades</div>
+    </div>
+    <div class="tbl-wrap">
+      <table class="tbl" id="jr-tbl">
+        <thead><tr>
+          <th>entry</th><th>exit</th><th>dir</th><th>strike</th><th class="r" title="lots · contracts">size</th>
+          <th class="r">entry ₹</th><th class="r">exit ₹</th><th class="r">P&amp;L %</th><th class="r">P&amp;L ₹</th>
+          <th>exit reason</th><th>confluence</th>
+        </tr></thead>
+        <tbody id="jr-body"><tr><td colspan="11" class="mut">no trades yet</td></tr></tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ============ BURST / BREACH / EVENTS ============ -->
+  <section class="panel" id="burst">
+    <div class="panel-head"><h2>BURST BOARD</h2><span class="mut" id="burst-n"></span></div>
+    <div class="tbl-wrap">
+      <table class="tbl" id="burst-tbl">
+        <thead><tr><th>#</th><th>instrument</th><th class="r">spot</th><th>state</th><th class="r" title="points to the upper level (negative = through it)">→up</th><th class="r" title="points to the lower level (negative = through it)">→dn</th><th title="0–1 closeness to bursting a level">heat</th><th class="r" title="applied NIFTY weight">w</th></tr></thead>
+        <tbody id="burst-body"><tr><td colspan="8" class="mut">—</td></tr></tbody>
+      </table>
+    </div>
+  </section>
+
+  <div class="col-right">
+    <section class="panel" id="breach">
+      <div class="panel-head"><h2>BREACH ALERTS</h2><span class="mut" id="breach-n"></span></div>
+      <div class="list" id="breach-list"><div class="mut">no live breaches</div></div>
+    </section>
+    <section class="panel" id="events">
+      <div class="panel-head"><h2>LIVE EVENTS</h2><span class="mut" id="events-n"></span></div>
+      <div class="list" id="events-list"><div class="mut">no events</div></div>
+    </section>
+  </div>
+
+  <!-- ============ OPTION CHAIN ============ -->
+  <section class="panel wide" id="chain">
+    <div class="panel-head"><h2>NIFTY OPTION CHAIN</h2><span class="mut" id="chain-n"></span></div>
+    <div class="tbl-wrap">
+      <table class="tbl chain-tbl" id="chain-tbl">
+        <thead><tr>
+          <th class="r" title="call open interest (L = lakh)">CE OI</th><th class="r">CE vol</th><th class="r" title="volume-weighted average price">CE vwap</th><th class="r ce">CE ltp</th>
+          <th class="c">strike</th>
+          <th class="pe">PE ltp</th><th title="volume-weighted average price">PE vwap</th><th>PE vol</th><th title="put open interest (L = lakh)">PE OI</th>
+        </tr></thead>
+        <tbody id="chain-body"><tr><td colspan="9" class="mut">—</td></tr></tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ============ UNIVERSE ============ -->
+  <section class="panel wide" id="universe">
+    <div class="panel-head"><h2>UNIVERSE</h2><span class="mut" id="uni-n"></span></div>
+    <div class="tbl-wrap">
+      <table class="tbl" id="uni-tbl">
+        <thead><tr>
+          <th>instrument</th><th class="r" title="applied NIFTY weight">w</th><th class="r">spot</th><th class="r" title="change this round">Δ</th><th class="r" title="future (imp = implied from parity, act = actual contract)">future</th><th class="r" title="future − spot (premium / discount)">basis</th>
+          <th class="r">lower</th><th class="r">upper</th><th class="r" title="points to the upper level">→up</th><th class="r" title="points to the lower level">→dn</th><th title="state · freshness age">state</th><th title="direction of the move">dir</th><th class="r" title="signal strength 0–1">str</th><th class="r" title="volume vs its usual rate">vol×</th>
+        </tr></thead>
+        <tbody id="uni-body"><tr><td colspan="14" class="mut">—</td></tr></tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ============ LEVEL HISTORY (always last) ============ -->
+  <section class="panel wide" id="lvlhist">
+    <div class="panel-head"><h2>PIN-RISK LEVEL HISTORY</h2><span class="mut" id="lvl-n"></span></div>
+    <div class="tbl-wrap">
+      <table class="tbl" id="lvl-tbl">
+        <thead><tr>
+          <th>time</th><th>trigger</th><th class="r" title="spot at the calc">anchor</th><th class="r">lower</th><th class="r">upper</th><th class="r" title="half-width">±</th>
+          <th class="r">ATM</th><th class="r" title="ITM call strike used">K ce</th><th class="r" title="its VWAP">vwap ce</th><th class="r" title="ITM put strike used">K pe</th><th class="r" title="its VWAP">vwap pe</th><th class="r">basis</th><th>mode</th><th>method</th>
+        </tr></thead>
+        <tbody id="lvl-body"><tr><td colspan="14" class="mut">—</td></tr></tbody>
+      </table>
+    </div>
+  </section>
+
+</main>
+
+<footer class="foot" id="foot">
+  <span id="foot-ver">VAJRA 2.0</span><span id="foot-round"></span><span id="foot-tape"></span>
+</footer>
+
+<script src="/static/ui.js"></script>
+<script src="/static/sound.js"></script>
+<script src="/static/data.js"></script>
+</body>
+</html>

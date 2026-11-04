@@ -1,0 +1,34 @@
+# VAJRA universe weights — refreshed from NSE factsheets dated 2026-05-29.
+# Source: ind_nifty50.pdf, ind_nifty_bank.pdf, ind_Nifty_Financial_Services.pdf
+# ALL constituents shown across the three factsheets are tracked (operator extended the
+# universe from the spec's default 10 to every stock listed in the three PDFs = 20 unique).
+# Weights drift on semi-annual rebalance (cut-offs Jan 31 / Jul 31). DO NOT hard-code in engine.
+# decision_weight (cross-instrument importance, spec §5.6) = the stock's index weightage / 100 —
+# NIFTY-50 weight where published, else the stock's BANK or FIN weight for constituents shown only
+# in those factsheets. Every tracked stock contributes independently per its own weightage.
+# Index rows carry beta_vs_nifty; the BANKNIFTY+FINNIFTY bloc weight (w_bloc) is in vajra_config.yaml.
+instrument,type,nifty_weight_pct,bank_weight_pct,fin_weight_pct,beta_vs_nifty,role,channel
+NIFTY,index,100.00,,,1.00,execution+primary_signal,self
+BANKNIFTY,index,,,,1.13,leading_confirming,financial_bloc
+FINNIFTY,index,,,,1.18,leading_confirming,financial_bloc
+HDFCBANK,stock,10.56,17.93,17.86,,constituent,shared_bank
+ICICIBANK,stock,8.32,13.63,13.58,,constituent,shared_bank
+RELIANCE,stock,8.27,,,,constituent,independent_reliance
+BHARTIARTL,stock,5.20,,,,constituent,independent_secondary
+LT,stock,4.43,,,,constituent,independent_secondary
+INFY,stock,3.77,,,,constituent,independent_secondary
+SBIN,stock,3.71,9.07,9.04,,constituent,shared_bank
+AXISBANK,stock,3.42,10.28,10.28,,constituent,shared_bank
+KOTAKBANK,stock,2.62,9.81,9.39,,constituent,shared_bank
+ITC,stock,2.56,,,,constituent,independent_secondary
+FEDERALBNK,stock,,6.38,,,constituent,bank_constituent
+INDUSINDBK,stock,,5.40,,,constituent,bank_constituent
+AUBANK,stock,,4.87,,,constituent,bank_constituent
+BANKBARODA,stock,,4.47,,,constituent,bank_constituent
+IDFCFIRSTB,stock,,4.27,,,constituent,bank_constituent
+BAJFINANCE,stock,,,8.06,,constituent,fin_constituent
+BSE,stock,,,5.62,,constituent,fin_constituent
+SHRIRAMFIN,stock,,,4.40,,constituent,fin_constituent
+BAJAJFINSV,stock,,,3.42,,constituent,fin_constituent
+SBILIFE,stock,,,2.73,,constituent,fin_constituent
+TCS,stock,2.06,,,,Heavyweight constituent (weight UNVERIFIED - from a 2026-06-11 constituent list; confirm against the NSE factsheet),independent
