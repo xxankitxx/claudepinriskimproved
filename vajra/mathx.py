@@ -28,6 +28,18 @@ def round_to(value: float, step: float) -> float:
     """
     if step <= 0:
         raise ValueError(f"round_to step must be > 0, got {step!r}")
+    # 2.2 fast path (the Decimal route was 6% of every engine round): a whole-number step and a
+    # quotient that is clearly not on a .5 tie give the same answer in plain float arithmetic.
+    # Anything near a tie, a fractional step or a non-finite value takes the exact Decimal route.
+    try:
+        if step == int(step) and math.isfinite(value) and abs(value) < 1e12:
+            q = value / step
+            fl = math.floor(q)
+            frac = q - fl
+            if abs(frac - 0.5) > 1e-6:
+                return float((fl + (1 if frac > 0.5 else 0)) * int(step))
+    except (TypeError, ValueError, OverflowError):
+        pass
     d_value = Decimal(str(value))
     d_step = Decimal(str(step))
     quotient = (d_value / d_step).quantize(Decimal("1"), rounding=ROUND_HALF_UP)

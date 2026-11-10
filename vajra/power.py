@@ -76,4 +76,48 @@ def status() -> dict:
         return out
 
 
-__all__ = ["keep_awake", "release", "status"]
+def _set_priority_class(cls: int) -> bool:
+    """SetPriorityClass on our own process. The handle types are declared: with ctypes' default int
+    types the 64-bit pseudo-handle from GetCurrentProcess() is truncated and the call fails silently."""
+    try:
+        import ctypes
+        from ctypes import wintypes
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        k32.GetCurrentProcess.restype = wintypes.HANDLE
+        k32.GetCurrentProcess.argtypes = []
+        k32.SetPriorityClass.restype = wintypes.BOOL
+        k32.SetPriorityClass.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+        return bool(k32.SetPriorityClass(k32.GetCurrentProcess(), cls))
+    except Exception:
+        return False
+
+
+def current_priority_class() -> int | None:
+    try:
+        import ctypes
+        from ctypes import wintypes
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        k32.GetCurrentProcess.restype = wintypes.HANDLE
+        k32.GetPriorityClass.restype = wintypes.DWORD
+        k32.GetPriorityClass.argtypes = [wintypes.HANDLE]
+        return int(k32.GetPriorityClass(k32.GetCurrentProcess())) or None
+    except Exception:
+        return None
+
+
+_PRIORITY = {"normal": 0x00000020, "above_normal": 0x00008000, "high": 0x00000080}
+
+
+def raise_priority(level: str = "above_normal") -> bool:
+    """2.2 (9 Nov 2026): other jobs on the laptop took the CPU and the engine's rounds ran 4x slower
+    while its socket fell 50 s behind. Give the LIVE engine process a higher scheduling class so
+    batch work elsewhere waits for it, not the other way round. Own process only; never realtime."""
+    if sys.platform != "win32":
+        return False
+    cls = _PRIORITY.get(str(level or "").lower())
+    if cls is None or cls == _PRIORITY["normal"]:
+        return False
+    return _set_priority_class(cls)
+
+
+__all__ = ["keep_awake", "release", "status", "raise_priority"]

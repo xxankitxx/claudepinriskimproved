@@ -229,6 +229,26 @@ class Orchestrator:
         # of a HELD level, BEFORE it breaches, so we buy the option cheap ahead of the
         # gamma explosion. No breach/continuation/bias gate.
         self.entry_proximity_pts = float(cfg.get("entry", "proximity_pts", default=7.0))
+        self._max_exch_lag = float(cfg.get("feed", "max_exch_lag_secs", default=6.0))   # 0 = off
+        # 2.2 entry-quality guards (15-day tape study, CHANGELOG 2.2). Each one DELAYS an entry until the
+        # condition clears; none of them skips a level for good. 0 / off = the 2.1 behaviour.
+        _en = cfg.get("entry", default={}) or {}
+        # momentum guard: no entry while NIFTY's move TOWARD the level over momentum_guard_secs is below
+        # momentum_min_pts (negative = only a real retreat blocks; positive = it must be approaching)
+        self._retreat_secs = float(_en.get("momentum_guard_secs", 0) or 0)
+        self._retreat_pts = -float(_en.get("momentum_min_pts", 0) or 0)   # internal: tolerated retreat
+        self._max_breach_pts = float(_en.get("max_breach_pts", 0) or 0)
+        self._rebuy_guard = str(_en.get("rebuy_guard", "off")).lower() in ("on", "true", "1")
+        self._rebuy_expiry_ms = int(float(_en.get("rebuy_guard_expiry_secs", 600)) * 1000)
+        self._rebuy_margin = float(_en.get("rebuy_guard_margin_pts", 0) or 0)
+        self._spot_hist: deque = deque()             # (ts_ms, NIFTY spot), last ~3 min
+        self._hist_proxy = False                     # spot source the history was recorded with
+        self._trade_best_spot: float | None = None   # best NIFTY spot (in the trade direction) while in it
+        self._rebuy: dict | None = None              # {"dir", "best", "ts"} after a profitable exit
+        self._last_entry_ctx: dict | None = None
+        self._last_trade_dir: str | None = None      # direction of the previous round trip (UP | DOWN)
+        self._lag_closed = False
+        self._lag_floor: float | None = None         # lowest exchange-lag reading of the session (clock skew)
         self._imminent_ms = int(float(snd.get("imminent_secs", 10)) * 1000)
         self.closing_session_start = self.closing.index_frozen_from
         # 2.0.4 closing-session spot proxy (see vajra/closing.py): clean pre-freeze NIFTY basis history,
@@ -838,9 +858,13 @@ class Orchestrator:
         in_session = (hhmm_reached(round_ts, self.trade_start)
                       and not hhmm_reached(round_ts, self.entry_cutoff))
         entry = self._approach_entry(nifty_band, nifty_snap, signals, dr) if in_session else None
+        if nifty_snap is not None:
+            self._track_spot(round_ts, nifty_snap.spot, entry)
         health_ok = self._health is None or self._health.ok
         if self._proxy_on and self._basis_ref_src != "median_clean_basis":
             health_ok = False        # 2.0.4: no pre-freeze basis -> the closing-session spot is a guess
+        if self._lag_gate(round_ts):
+            health_ok = False        # 2.2: the NIFTY stream is seconds behind the exchange -> no NEW entries
 
         # ---- the ordered entry gates (first closed gate = the "why no trade" reason) ----
         gate = None
@@ -864,6 +888,8 @@ class Orchestrator:
             gate = Reason.POST_PROFIT_COOLDOWN
         elif entry is None:
             gate = Reason.NO_APPROACH
+        else:
+            gate = self._entry_guards(round_ts, entry, nifty_snap)
         self._entry_gate = gate
         fire = gate is None and entry is not None and nifty_snap is not None
 
@@ -923,7 +949,9 @@ class Orchestrator:
                 "opp_side": conf["opp_side"], "conflicted": conf["conflicted"],
                 "regime": self.regime.name,
                 "buy": f"NIFTY {int(cur_atm)} {'CE' if entry['direction']=='UP' else 'PE'}",
+                **self._entry_context(round_ts, entry),
             }, round_ts)
+            self._last_entry_ctx = self._entry_context(round_ts, entry)
             # signal_tape is written AFTER enter() returns, gated on a real ENTRY (below).
             order_rows = self.executor.enter(
                 round_ts, entry["direction"], nifty_snap, nifty_band,
@@ -941,6 +969,8 @@ class Orchestrator:
             if _r0 and _r0["action"] == "ENTRY":
                 self.tape.append("signal_tape", self._approach_signal_row(round_ts, entry, conf))
                 self._position_dir = entry["direction"]
+                self._rebuy = None                 # a new trade is on: the old re-buy condition is spent
+                self._trade_best_spot = None
                 self._last_confluence = conf
                 self._entries_today += 1
                 self.sounds.emit("entry", round_ts,
@@ -961,6 +991,13 @@ class Orchestrator:
             if gate == Reason.POST_STOP_COOLDOWN and entry is not None:
                 _left = max(0, round((self.post_stop_cooldown_ms - secs_since_stop) / 1000))
                 self._entry_block = f"POST-STOP COOLDOWN {_left}s"
+            elif gate == Reason.ENTRY_RETREATING:
+                self._entry_block = ("WAIT - NIFTY moving away from the level" if self._retreat_pts >= 0
+                                     else "WAIT - NIFTY not moving toward the level yet")
+            elif gate == Reason.REBUY_WAIT and self._rebuy is not None:
+                self._entry_block = f"WAIT - re-buy needs NIFTY beyond {self._rebuy['best']:.0f}"
+            elif gate == Reason.BREACH_TOO_DEEP:
+                self._entry_block = "WAIT - NIFTY already far through the level"
 
         # ---- manage an open position EVERY round NIFTY is present (2.0: even when this round's
         # band/basis failed — 1.x skipped stops and the 15:25 flatten on such rounds).
@@ -999,8 +1036,15 @@ class Orchestrator:
                                                  "cooldown_secs": self.post_stop_cooldown_ms // 1000,
                                                  "strike": _xr["strike"], "right": _xr["right"]},
                                      ts_ms=round_ts)
-                elif _xr["action"] == "EXIT" and _xr.get("pnl_realized", 0.0) > 0:
+                elif _xr["action"] == "EXIT" and (_xr.get("pnl_realized", 0.0) > 0
+                                                  or _xr.get("exit_reason") == "BE_STOP"):
+                    # a protective-stop exit is a scratch: the short post-profit pause applies (never
+                    # the 11-minute post-stop one), whichever side of zero the bid filled it
                     self._last_profit_ms = round_ts
+                    if self._position_dir and self._trade_best_spot is not None:
+                        self._rebuy = {"dir": self._position_dir, "best": self._trade_best_spot, "ts": round_ts}
+                if _xr["action"] == "EXIT":
+                    self._trade_best_spot = None
             if not self.executor.position_active:
                 self._position_dir = None
                 self._last_confluence = None
@@ -1070,6 +1114,107 @@ class Orchestrator:
             self._emit_event("ANOMALY", {"kind": "POWER_AC_RESTORED", "battery_pct": st.get("battery_pct")}, ts_ms=round_ts)
         self._power_on_battery = on_batt
 
+    # ---- 2.2 entry-quality guards -----------------------------------------------------------------
+    def _track_spot(self, ts: int, spot: float, entry) -> None:
+        """Per-round NIFTY bookkeeping for the guards: a short spot history, the best spot of the open
+        trade, and the end of a re-buy episode (spot left the entry zone, or the wait ran out)."""
+        h = self._spot_hist
+        if self._proxy_on != self._hist_proxy:       # 15:15: index -> closing-session proxy is a change of
+            self._hist_proxy = self._proxy_on        # yardstick, not a move; the momentum guard starts afresh
+            h.clear()
+        h.append((ts, spot))
+        while h and ts - h[0][0] > 185_000:
+            h.popleft()
+        pos = self.executor.position if self.executor.position_active else None
+        if pos is not None:
+            b = self._trade_best_spot
+            if b is None:
+                b = pos.entry_spot
+            self._trade_best_spot = max(b, spot) if pos.direction == "UP" else min(b, spot)
+        rb = self._rebuy
+        if rb is not None and pos is None:
+            if (entry is None or entry["direction"] != rb["dir"]
+                    or ts - rb["ts"] > self._rebuy_expiry_ms):
+                self._rebuy = None                   # a fresh approach (or the other side) is a new trade idea
+
+    def _spot_move(self, ts: int, secs: float, direction: str) -> float | None:
+        """Points NIFTY moved TOWARD the trade direction over the last ``secs`` (negative = moving
+        away). None when the history does not reach back at least half of the window."""
+        if secs <= 0 or not self._spot_hist:
+            return None
+        cut = ts - int(secs * 1000)
+        ref = None
+        for t, sp in self._spot_hist:
+            if t >= cut:
+                ref = (t, sp)
+                break
+        if ref is None or ts - ref[0] < secs * 500:
+            return None
+        d = self._spot_hist[-1][1] - ref[1]
+        return d if direction == "UP" else -d
+
+    def _entry_guards(self, ts: int, entry: dict, snap) -> str | None:
+        """The first guard that asks this entry to wait (a Reason code), or None to let it fire."""
+        d = entry["direction"]
+        if self._max_breach_pts > 0 and entry["dist"] < -self._max_breach_pts:
+            return Reason.BREACH_TOO_DEEP
+        rb = self._rebuy
+        if self._rebuy_guard and rb is not None and rb["dir"] == d and snap is not None:
+            beyond = (snap.spot - rb["best"]) if d == "UP" else (rb["best"] - snap.spot)
+            if beyond < self._rebuy_margin:
+                return Reason.REBUY_WAIT
+        if self._retreat_secs > 0:
+            mv = self._spot_move(ts, self._retreat_secs, d)
+            if mv is not None and mv < -self._retreat_pts:
+                return Reason.ENTRY_RETREATING
+        return None
+
+    def _entry_context(self, ts: int, entry: dict) -> dict:
+        """What the tape should remember about the moment of an entry (2.2: the 15-day study had to
+        rebuild all of this from the tick tape)."""
+        d = entry["direction"]
+        last_exit = max(self._last_profit_ms, self._last_stop_ms)
+
+        def mv(n):
+            m = self._spot_move(ts, n, d)
+            return None if m is None else round(m, 2)
+        lag = getattr(self._breeze, "tick_lag_s", None) if self._breeze is not None else None
+        return {"move_30s": mv(30), "move_120s": mv(120),
+                "secs_since_exit": (round((ts - last_exit) / 1000, 1) if last_exit else None),
+                "after": ("profit" if last_exit and last_exit == self._last_profit_ms else
+                          "stop" if last_exit else None),
+                "exch_lag_s": lag, "breached": bool(entry.get("breached")),
+                "same_side": (self._last_trade_dir == d) if self._last_trade_dir else None,
+                "dist_pts": round(float(entry.get("dist", 0.0)), 2)}
+
+    def _lag_gate(self, round_ts: int) -> bool:
+        """2.2 (9 Nov tape: 18 entries, most of the afternoon's on a NIFTY price 25-50 s old). True
+        while the live NIFTY cash stream runs more than feed.max_exch_lag_secs behind the exchange
+        clock; re-opens below half of it. Live only (replay has no broker clock) -- blocks new
+        entries, never the management of an open position."""
+        lag = getattr(self._breeze, "tick_lag_s", None) if self._breeze is not None else None
+        if self._max_exch_lag <= 0 or lag is None:
+            self._lag_closed = False
+            return False
+        # The gauge is "laptop clock - exchange clock", so a laptop clock that runs a few seconds fast
+        # would read as permanent lag. Judge the EXCESS over the best (lowest) value seen this session.
+        if self._lag_floor is None or lag < self._lag_floor:
+            self._lag_floor = lag
+        lag = round(lag - self._lag_floor, 2)
+        was = self._lag_closed
+        if not was and lag > self._max_exch_lag:
+            self._lag_closed = True
+            self._emit_event("FEED_GAP", {"instrument": "NIFTY", "stage": "exch_lag", "lag_secs": lag,
+                                         "limit_secs": self._max_exch_lag,
+                                         "note": "NIFTY ticks are arriving late -- entries paused"},
+                             ts_ms=round_ts)
+            self.sounds.emit("feed_alarm", round_ts, f"NIFTY feed {lag:.0f}s behind the exchange")
+        elif was and lag < self._max_exch_lag / 2.0:
+            self._lag_closed = False
+            self._emit_event("FEED_HEALTH", {"instrument": "NIFTY", "stage": "exch_lag_recovered",
+                                            "lag_secs": lag}, ts_ms=round_ts)
+        return self._lag_closed
+
     def _feed_health_view(self) -> dict | None:
         """2.1: broker socket / subscription health (live mode only; None in replay)."""
         src = getattr(self, "_source", None)
@@ -1086,7 +1231,7 @@ class Orchestrator:
         if not h:
             return None
         return {k: h.get(k) for k in ("connected", "tick_age_s", "reconnects_ok", "reconnects_failed",
-                                      "drops", "sub_errors", "silent") if k in h}
+                                      "drops", "sub_errors", "silent", "exch_lag_s", "backlog") if k in h}
 
     def _record_anchor(self, ts, band, trigger):
         """Snapshot the NIFTY level calc (time + ITM inputs + levels) for the dashboard,
@@ -1207,7 +1352,7 @@ class Orchestrator:
                                          f"EXIT {_xr['exit_reason']} {pnl:+,.0f}")
                         if _xr.get("exit_reason") == "SL_HIT":
                             self._last_stop_ms = round_ts
-                        elif pnl > 0:
+                        elif pnl > 0 or _xr.get("exit_reason") == "BE_STOP":
                             self._last_profit_ms = round_ts
                 self._push_sounds()
         except Exception:
@@ -1327,7 +1472,7 @@ class Orchestrator:
                 if (r.get("exit_reason") or "") == SL_HIT:
                     self._last_stop_ms = int(r["ts"])
                     self._stop_cooldown_active = True
-                elif p_ > 0:
+                elif p_ > 0 or (r.get("exit_reason") or "") == "BE_STOP":
                     self._last_profit_ms = int(r["ts"])
                     self._profit_cooldown_active = True
                 if self._open_trade is not None:
@@ -1613,9 +1758,16 @@ class Orchestrator:
                     "pnl": 0.0, "pnl_pct": 0.0, "exit_reason": None, "status": "OPEN",
                     "verdict": c.get("verdict"), "same_side": c.get("same_side", []),
                     "opp_side": c.get("opp_side", []), "conflicted": c.get("conflicted", False),
+                    # 2.2: how the entry was taken (after a profit / a stop, NIFTY's last 30 s, feed lag)
+                    "ctx": dict(self._last_entry_ctx) if self._last_entry_ctx else None,
+                    "peak_pct": 0.0, "low_pct": 0.0,
                 }
             elif row["action"] == "EXIT" and self._open_trade is not None:
                 t = self._open_trade
+                _p = self.executor.position
+                if _p is not None and _p.entry_fill:
+                    t["peak_pct"] = round((_p.peak_premium / _p.entry_fill - 1) * 100, 1)
+                    t["low_pct"] = round(((_p.trough_premium or _p.entry_fill) / _p.entry_fill - 1) * 100, 1)
                 t["exit_ts"] = row["ts"]; t["exit_price"] = round(row["fill_price"], 2)
                 t["pnl"] = round(row["pnl_realized"], 2)
                 # % derived from the canonical realized P&L (slippage/qty-aware) so it can never
@@ -1625,6 +1777,16 @@ class Orchestrator:
                 t["exit_reason"] = row["exit_reason"]; t["status"] = "CLOSED"
                 self.journal.append(t)
                 self._open_trade = None
+                self._last_trade_dir = t.get("direction")
+                # 2.2: the whole round trip on the event tape, so the evening review (tools/trade_review.py)
+                # never has to rebuild it from the tick tape again
+                try:
+                    self.tape.event("TRADE", {k: t.get(k) for k in (
+                        "entry_ts", "exit_ts", "direction", "right", "strike", "qty", "entry_price",
+                        "exit_price", "pnl", "pnl_pct", "exit_reason", "verdict", "peak_pct", "low_pct",
+                        "ctx")}, ts_ms=row["ts"])
+                except Exception:
+                    pass
 
     # ---- ANTICIPATORY ENTRY (operator rule) --------------------------------
     def _approach_entry(self, band, snap, signals, dr):
@@ -1796,6 +1958,9 @@ class Orchestrator:
         "POST_STOP_COOLDOWN": "post-stop cooldown",
         "POST_PROFIT_COOLDOWN": "short pause after a profit",
         "NO_APPROACH": "waiting for NIFTY to reach a level",
+        "ENTRY_RETREATING": "NIFTY is at the level but not moving toward it -- waiting for it to turn",
+        "REBUY_WAIT": "re-buy after a profit waits for NIFTY to pass the last trade's best price",
+        "BREACH_TOO_DEEP": "NIFTY is already far through the level",
     }
 
     def _idle_diagnostics(self, ts) -> dict:
@@ -1874,6 +2039,9 @@ class Orchestrator:
             # live % derived from the same unrealized rupee figure above (one consistent story).
             ot["pnl_pct"] = (round(ot["pnl"] / (ot["entry_price"] * pos.qty_remaining) * 100, 1)
                              if ot["entry_price"] and pos.qty_remaining else 0.0)
+            if pos.entry_fill:
+                ot["peak_pct"] = round((pos.peak_premium / pos.entry_fill - 1) * 100, 1)
+                ot["low_pct"] = round(((pos.trough_premium or pos.entry_fill) / pos.entry_fill - 1) * 100, 1)
             journal.append(ot)
         closed = [t for t in self.journal]
         realized = round(sum(t["pnl"] for t in closed), 2)
@@ -1954,6 +2122,12 @@ class Orchestrator:
                     "hard_sl": round(pos.entry_fill * (1 - self.executor.hard_sl_pct), 2),
                     "trail_activate": round(pos.entry_fill * (1 + self.executor.trail_activate_pct), 2),
                     "min_profit": round(pos.entry_fill * (1 + self.executor.min_profit_pct), 2),
+                    # 2.2 protective stop (null when the rule is off)
+                    "be_arm": (round(pos.entry_fill * (1 + self.executor.breakeven_arm_pct), 2)
+                               if self.executor.breakeven_arm_pct > 0 else None),
+                    "be_lock": (round(pos.entry_fill * (1 + self.executor.breakeven_lock_pct), 2)
+                                if self.executor.breakeven_arm_pct > 0 else None),
+                    "be_armed": bool(getattr(pos, "be_armed", False)),
                 },
             },
             "capital": self._capital_block(pos),
@@ -1984,6 +2158,18 @@ class Orchestrator:
             # ---- 2.1 ----
             "ws": self._feed_health_view(),              # broker socket + subscription health (live only)
             "power": (dict(self._power) if self._power else None),   # {on_battery, battery_pct, ac} (live, Windows)
+            # ---- 2.2 ----
+            "feed_lag": {"closed": bool(self._lag_closed), "limit_s": self._max_exch_lag,
+                         "reopen_s": self._max_exch_lag / 2.0,
+                         "lag_s": (getattr(self._breeze, "tick_lag_s", None) if self._breeze is not None else None)},
+            "guards": {"retreat_secs": self._retreat_secs, "retreat_pts": self._retreat_pts,
+                       "momentum_min_pts": -self._retreat_pts,
+                       "breakeven": (None if self.executor.breakeven_arm_pct <= 0 else
+                                     {"arm_pct": self.executor.breakeven_arm_pct,
+                                      "lock_pct": self.executor.breakeven_lock_pct}),
+                       "rebuy": self._rebuy_guard, "max_breach_pts": self._max_breach_pts,
+                       "rebuy_wait": (None if self._rebuy is None else
+                                      {"dir": self._rebuy["dir"], "beyond": round(self._rebuy["best"], 2)})},
             "round": {"proc_ms": round((time.perf_counter() - self._round_t0) * 1000, 1),
                       "published_ms": int(time.time() * 1000), "gc": self.__dict__.get("gc_info")},
         }

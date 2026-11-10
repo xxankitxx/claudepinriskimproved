@@ -141,6 +141,9 @@ def run(config_path: str | None = None, mode: str | None = None,
                       sidecar_jsonl=str(cfg.get("tape", "sidecar_jsonl", default="small")),
                       compression=str(cfg.get("tape", "compression", default="zstd")))
     tape.drop_verified_jsonl = str(cfg.get("tapes", "drop_verified_jsonl", default="on")).lower() not in ("off", "0", "no", "false")
+    if getattr(tape, "merge_in_progress", False):
+        _say("  vajra · the earlier session's tapes are still being merged by the background process -- "
+             "left to it (logs/tape_merge.log)")
     if getattr(tape, "recovering", None):
         _say(f"  vajra · an earlier (killed) session today left tape parts: {', '.join(tape.recovering)} -- "
              f"merging in the background (the session starts now, not after the merge)")
@@ -241,6 +244,9 @@ def run(config_path: str | None = None, mode: str | None = None,
         from . import power as _power
         _say("  vajra · system sleep blocked for the session" if _power.keep_awake()
              else "  !! could not block system sleep -- set the Windows power plan to never sleep while plugged in")
+        _prio = str(cfg.get("runtime", "process_priority", default="above_normal"))
+        if _power.raise_priority(_prio):
+            _say(f"  vajra · process priority {_prio} (batch jobs on this laptop now wait for the engine)")
         _ps = _power.status()
         if _ps.get("on_battery"):
             _say(f"  !! RUNNING ON BATTERY ({_ps.get('battery_pct')}%) -- plug the laptop in. A power-off "
@@ -267,19 +273,27 @@ def run(config_path: str | None = None, mode: str | None = None,
         except Exception:
             pass
         _t0 = time.perf_counter()
-        try:
-            tape.close()
+        # 2.2: the live engine only CLOSES its part files here; the minutes-long merge runs in a
+        # detached process, so this window can be closed straight away (9 Nov: it was, mid-merge).
+        _detach = (mode == "live" and str(cfg.get("tape", "merge_at_close", default="detached")).lower()
+                   == "detached")
+        try:                                       # the binding tapes first (a console close gives ~4.5 s)
+            tape.close(merge=not _detach)
         except Exception as _e:
             _say(f"  !! tape close failed ({_e!r}) — parts are kept on disk and merge at the next start")
         finally:
             _done.set()
         if raw_rec is not None:
             try:
-                raw_rec.close()
+                raw_rec.close(merge=not _detach)
                 _say(f"  vajra · raw ticks recorded: {raw_rec.rows:,} rows"
                      + (f" ({raw_rec.dropped:,} dropped — disk too slow)" if raw_rec.dropped else ""))
             except Exception:
                 pass
+        try:                                       # 2.2: only now is every part in the folder closed
+            tape.release_live()
+        except Exception:
+            pass
         if breeze is not None:
             try:
                 breeze.disconnect()
@@ -294,6 +308,13 @@ def run(config_path: str | None = None, mode: str | None = None,
             except Exception:
                 pass
         _say(f"  vajra · tapes closed in {time.perf_counter() - _t0:.1f} s")
+        if _detach:
+            from . import tape_merge
+            if tape_merge.spawn([tape.partition]):
+                _say("  vajra · the day's tapes are being merged by a background process "
+                     "(logs/tape_merge.log) -- this window can be closed now")
+            elif tape_merge.has_parts(tape.partition):
+                _say("  !! could not start the tape merge -- the parts are intact and merge at the next start")
 
     return str(tape.partition)
 
@@ -361,21 +382,19 @@ def abnormal_end_report(root, today, max_days: int = 3) -> list[str]:
     return lines
 
 
-def _repair_prior_days(root, today, days: int = 5) -> None:
-    """2.1: merge leftover parquet parts of recent killed sessions (cheap; a background thread) so
-    EOD tooling and the prev-close seed always find readable files."""
-    def _job():
-        try:
-            from .tape import recover_partition
-            parts = sorted(p for p in root.glob("*") if p.is_dir() and p.name < today.isoformat()
-                           and len(p.name) == 10 and p.name[:4].isdigit())
-            for p in parts[-days:]:
-                rec = recover_partition(p)
-                if rec:
-                    _say(f"  vajra · recovered {p.name}: {', '.join(rec)}")
-        except Exception:
-            pass
-    threading.Thread(target=_job, name="vajra-tape-repair", daemon=True).start()
+def _repair_prior_days(root, today, days: int = 8) -> None:
+    """Merge leftover parquet parts of recent sessions whose merge was interrupted, so EOD tooling and
+    the prev-close seed find readable files. 2.2: done by a detached low-priority process
+    (vajra.tape_merge) -- the in-process thread it replaces competed with the live feed for the
+    interpreter for minutes at the open."""
+    try:
+        from . import tape_merge
+        stale = tape_merge.stale_partitions(root, exclude=root / today.isoformat(), look_back=days)
+        if stale and tape_merge.spawn(stale):
+            _say(f"  vajra · unmerged tapes from {', '.join(d.name for d in stale)} -- merging in a "
+                 f"background process (logs/tape_merge.log)")
+    except Exception:
+        pass
 
 
 def _build_source(cfg, mode, session_date, res, breeze, event_sink=None, pace: float = 0.0):
@@ -445,6 +464,8 @@ def _connect_breeze(cfg, tape, ts_ms):
         reconnect_backoff_secs=float(cfg.get("breeze", "reconnect_backoff_secs", default=2)),
         sdk_reconnect_grace_secs=float(cfg.get("feed", "sdk_reconnect_grace_secs", default=10)),
         keepalive_secs=float(cfg.get("feed", "ws_keepalive_secs", default=10)),
+        buffered_reader=str(cfg.get("feed", "ws_buffered_reader", default="on")).lower() not in ("off", "false", "0"),
+        switch_interval_ms=float(cfg.get("feed", "switch_interval_ms", default=0.5)),
     )
     try:
         bw.connect()

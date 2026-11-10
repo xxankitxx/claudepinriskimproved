@@ -136,13 +136,43 @@ def _bogus_token(tok) -> bool:
     return (not isinstance(tok, str)) or tok == "" or tok.endswith("!False") or tok.endswith("!None")
 
 
+class _BufferedSock:
+    """Read-side buffer over the websocket's socket (see BreezeWrapper._buffer_socket). Everything but
+    ``recv`` is the real socket's; ``recv`` only touches the network when the buffer is empty."""
+
+    __slots__ = ("_s", "_b")
+    CHUNK = 65536
+
+    def __init__(self, sock):
+        self._s = sock
+        self._b = bytearray()
+
+    def recv(self, n, *a):
+        b = self._b
+        if not b:
+            d = self._s.recv(self.CHUNK if n < self.CHUNK else n)
+            if not d or len(d) <= n:
+                return d
+            b += d
+        out = bytes(b[:n])
+        del b[:n]
+        return out
+
+    def __getattr__(self, k):
+        return getattr(self._s, k)
+
+
 class BreezeWrapper:
     INBOX_MAX = 60_000              # raw socket.io packets waiting for the consumer (oldest evicted)
 
     def __init__(self, creds: BreezeCredentials, vix_fix: bool = True,
                  reconnect_max_retries: int = 5, reconnect_backoff_secs: float = 2.0,
-                 sdk_reconnect_grace_secs: float = 10.0, keepalive_secs: float = 10.0):
+                 sdk_reconnect_grace_secs: float = 10.0, keepalive_secs: float = 10.0,
+                 buffered_reader: bool = True, switch_interval_ms: float = 0.5):
         self.creds = creds
+        self.buffered_reader = bool(buffered_reader)    # 2.2: one big socket read per wake-up (see _buffer_socket)
+        self.switch_interval_ms = float(switch_interval_ms)
+        self.sockets_buffered = 0
         self.vix_fix = vix_fix
         self.reconnect_max_retries = reconnect_max_retries
         self.reconnect_backoff_secs = reconnect_backoff_secs
@@ -231,6 +261,16 @@ class BreezeWrapper:
                     if not hasattr(self._breeze, "interval"):
                         self._breeze.interval = ""
                     self._session_ok = True            # a session is generated once; only the socket retries
+                # 2.2: a thread that just finished a socket read waits one switch interval for the
+                # interpreter lock while another thread computes; 5 ms (the default) per read starved
+                # the reader on 9 Nov. 0.5 ms costs ~1% throughput and removes the convoy.
+                if self.switch_interval_ms > 0:
+                    try:
+                        import sys as _sys
+                        if _sys.getswitchinterval() > self.switch_interval_ms / 1000.0:
+                            _sys.setswitchinterval(self.switch_interval_ms / 1000.0)
+                    except Exception:
+                        pass
                 self._start_consumer()                 # must be alive before any hooked socket exists
                 self._breeze.ws_connect()
                 self._hook_handler()
@@ -333,6 +373,10 @@ class BreezeWrapper:
         inbox, ev, wrapper = self._inbox, self._inbox_ev, self
 
         def _trigger(event, *args, **kwargs):
+            # runs on the socket READER thread, between two reads: the one safe place to swap the socket
+            ws = getattr(eio, "ws", None)
+            if ws is not None and not getattr(ws, "_vajra_buf", False):
+                wrapper._buffer_socket(ws)
             if event == "message" and args and wrapper._consumer_alive():
                 if len(inbox) >= inbox.maxlen:
                     wrapper.inbox_dropped += 1
@@ -354,6 +398,26 @@ class BreezeWrapper:
                 fh._vajra = True
                 lg.addHandler(fh)
                 lg.setLevel(logging.WARNING)
+        except Exception:
+            pass
+
+    def _buffer_socket(self, ws) -> None:
+        """2.2 (9 Nov tape: NIFTY 25-50 s behind the exchange for two hours, 93 drops). websocket-client
+        reads each frame with three small ``recv`` calls; every one releases the interpreter lock and,
+        while another thread is busy, waits a full switch interval (5 ms) to get it back -- measured cap
+        35 frames/s against the 300/s the feed needs. One 64 KB read now serves hundreds of frames, and
+        the pure-Python UTF-8 check of every frame is skipped (the JSON parser validates anyway)."""
+        try:
+            ws._vajra_buf = True
+            if not self.buffered_reader:
+                return
+            sock = getattr(ws, "sock", None)
+            if sock is not None and not isinstance(sock, _BufferedSock):
+                ws.sock = _BufferedSock(sock)
+            for part in (getattr(ws, "frame_buffer", None), getattr(ws, "cont_frame", None)):
+                if part is not None and hasattr(part, "skip_utf8_validation"):
+                    part.skip_utf8_validation = True
+            self.sockets_buffered += 1
         except Exception:
             pass
 
@@ -667,6 +731,7 @@ class BreezeWrapper:
             "backlog": len(self._inbox), "backlog_max": self.inbox_max_seen,
             "inbox_dropped": self.inbox_dropped, "fast_parsed": self.fast_parsed,
             "exch_lag_s": self.tick_lag_s, "threads": threading.active_count(),
+            "buffered": self.sockets_buffered,
             "last_error": self.last_connect_error or self.last_sub_error,
         }
 

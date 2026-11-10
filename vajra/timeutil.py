@@ -16,14 +16,25 @@ def ist_datetime(ts_ms: int) -> datetime:
     return datetime.fromtimestamp(ts_ms / 1000.0, tz=IST)
 
 
+_IST_OFFSET_S = 19_800
+
+
 def ist_seconds_into_day(ts_ms: int) -> int:
-    dt = ist_datetime(ts_ms)
-    return dt.hour * 3600 + dt.minute * 60 + dt.second
+    # 2.2: plain arithmetic (IST has a fixed offset); building a datetime here cost ~4% of a round
+    return (int(ts_ms) // 1000 + _IST_OFFSET_S) % SECONDS_PER_DAY
+
+
+_HHMM_CACHE: dict = {}
 
 
 def parse_hhmm(s: str) -> int:
-    h, m = str(s).split(":")
-    return int(h) * 3600 + int(m) * 60
+    v = _HHMM_CACHE.get(s)
+    if v is None:
+        h, m = str(s).split(":")
+        v = int(h) * 3600 + int(m) * 60
+        if len(_HHMM_CACHE) < 256:
+            _HHMM_CACHE[s] = v
+    return v
 
 
 def basis_signal_weight(

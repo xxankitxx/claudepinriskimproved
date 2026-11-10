@@ -1,3 +1,121 @@
+# 2.2 — why trades lose, a feed that keeps up, and a lab to test rules (10 Nov 2026, market holiday)
+
+Study of the 15 recorded live days (19 Oct - 9 Nov 2026): 174 paper trades, net +1.74 lakh, of which +2.29 lakh
+came on the first two days; 97 trail exits (+15.0 lakh) against 74 hard stops (-13.2 lakh).
+
+## The feed was late on every day (the main bug)
+- NIFTY cash `receive time - exchange time`: 10-75% of ticks were more than 5 s late on EVERY recorded day
+  (3 Nov: 47% more than 15 s late; 9 Nov: 25-50 s late 12:00-13:15 and 14:30-15:33 with 93 socket drops, the
+  tick rate falling from ~300/s to ~40/s). On 9 Nov a trail exit was booked at -33% because the option quote
+  refreshed only every 5-14 s (65.55 -> 36.95 between two updates, stop at 61.70).
+- Root cause (reproduced in a local benchmark): websocket-client reads each frame with three small `recv`
+  calls; each one releases the interpreter lock and, while any other thread is computing, waits a full switch
+  interval (5 ms) to get it back. That caps the reader at 35-70 frames/s whenever the engine round, the tick
+  consumer or anything else is busy -- exactly the 38-46 ticks/s seen in the storms. Once the backlog reaches
+  ~45 s the broker cuts the socket; the re-join starts the next cycle.
+- Fixes (`vajra/breeze.py`): `_BufferedSock` reads the socket in 64 KB chunks (one read serves hundreds of
+  frames; benchmark 35 -> 600 frames/s under the same load), the pure-Python UTF-8 check of every frame is
+  skipped, and the interpreter switch interval is 0.5 ms while live. The live engine also runs at
+  above-normal process priority (`runtime.process_priority`): on 9 Nov the engine's own rounds ran 4x slower
+  while other jobs had the CPU.
+- New entry gate: no NEW entry while the NIFTY stream is more than `feed.max_exch_lag_secs` (6) behind the
+  exchange, measured against the best reading of the session so a fast laptop clock cannot close it; re-opens
+  below half. `FEED_GAP stage=exch_lag`, the feed alarm, a dashboard banner. Open positions are still managed.
+  `ws.exch_lag_s` and `ws.backlog` are now on every round_tape row.
+
+## Other bugs
+- **9 Nov was left as 1,538 part files**: the end-of-day merge ran inside the console window for minutes and
+  the window was closed. The live engine now only closes its parts and starts `vajra.tape_merge` as a detached,
+  low-priority process (`tape.merge_at_close: detached`); the next start also sweeps the last 8 day folders.
+  The startup repair no longer runs as a thread inside the engine (it competed with the feed at the open).
+  9 Nov has been repaired.
+- Engine round 25-30% lighter with identical numbers: the max-OI pin is found in one pass instead of two sorts
+  per instrument per round (22% of the round), whole-number `round_to` avoids Decimal off ties, the IST clock
+  is plain arithmetic (`tests/test_perf_22.py` checks each against the old implementation).
+
+- Review pass (same day): a same-day restart while the earlier session's background merge was still running
+  could have merged the same parts twice (every row duplicated) or touched a part the new session was writing.
+  A TapeWriter now keeps a `.live` marker in its day folder and a merge holds `.merge.lock`: the merge never
+  enters a folder with a fresh marker, only merges parts that existed before it checked, and a new session
+  leaves the earlier parts to a merge that is already running. A re-buy condition no longer outlives the next
+  entry, the momentum guard restarts its history at the 15:15 switch to the closing-session spot, the lab
+  flags a day whose run crashed (it used to look like a zero-trade day), and `tools/eod_report.py` no longer
+  crashes when its output is piped on a cp1252 console.
+
+## Why trades lost (tools/trade_review.py prints this from the tapes)
+| entry type | trades | won | P&L |
+|---|---|---|---|
+| re-buy within 20 s of a trail profit | 42 | 43% | -2.47 lakh |
+| later after a profit | 49 | 57% | +1.53 lakh |
+| after a stop (11-min cooldown) | 66 | 59% | +2.30 lakh |
+| level already breached at entry | 46 | 48% | -1.53 lakh |
+| approaching the level | 122 | 57% | +2.65 lakh |
+| NIFTY moved < 3 pts toward the level in the last 30 s | 62 | 47% | -2.06 lakh |
+| NIFTY moved >= 3 pts toward it | 112 | 58% | +3.80 lakh |
+| entries after 15:00 | 14 | 36% | -0.74 lakh |
+
+Also: 41% of the hard-stopped trades had been +5% or better before they fell to -12%; the confluence verdict
+(STRONG / MILD / LONE / CONFLICTED) did not separate winners from losers.
+
+## New switches (each tested on all 15 days in the lab; see the table)
+- `entry.rebuy_guard`: after a profitable exit, the SAME side is bought again only once NIFTY trades beyond
+  the best price of that trade (the move has resumed), or the approach ends and a new one starts, or 10 min pass.
+- `entry.momentum_guard_secs` / `entry.momentum_min_pts`: no entry while NIFTY's move toward the level over the
+  window is below the minimum. Both guards are WAITS: the entry fires when the condition clears.
+- `entry.max_breach_pts`: optional cap on how far through the level an entry may be taken (off).
+- `execution.breakeven_arm_pct` / `breakeven_lock_pct`: protective stop -- once a trade has been +arm%, the
+  stop moves from -12% to +lock% until the +10% trail takes over. Exit reason `BE_STOP`; it starts the short
+  post-profit pause, never the 11-minute one.
+
+Lab results, 15 days, real engine, NIFTY only (`python tools/lab.py run ...`). Two replays per candidate
+(every 4th / every 3rd recorded round) because one all-in trade can swing a compounded total by a lakh;
+"avg / trade" (premium return per trade, not compounded) is the steadier number, standard error ~1.2%.
+
+| variant | replay | trades | won | avg / trade | compounded P&L | winning days |
+|---|---|---|---|---|---|---|
+| 2.1 rules (baseline) | 4th | 163 | 56% | +1.81% | +2.47 lakh | 8 / 15 |
+| 2.1 rules (baseline) | 3rd | 170 | 52% | +1.35% | +2.41 lakh | 8 / 15 |
+| re-buy guard only | 4th | 167 | 56% | +2.16% | +3.28 lakh | 8 / 15 |
+| momentum guard only (30 s, +3 pts) | 4th | 165 | 59% | +2.79% | +4.52 lakh | 9 / 15 |
+| **both entry guards (2.2 default)** | 4th | 172 | 61% | +3.43% | +6.44 lakh | 10 / 15 |
+| **both entry guards (2.2 default)** | 3rd | 171 | 55% | +1.99% | +2.14 lakh | 9 / 15 |
+| protective stop only (+6% -> +1%) | 4th | 201 | 62% | +1.76% | +2.83 lakh | 10 / 15 |
+| both guards + protective stop | 4th | 198 | 67% | +3.71% | +8.91 lakh | 12 / 15 |
+| both guards + protective stop | 3rd | 204 | 66% | +3.03% | +5.19 lakh | 11 / 15 |
+| expiry-day last entry 15:10 | 4th | 156 | 57% | +2.34% | +3.17 lakh | 10 / 15 |
+| trail give-back 8% (instead of 6%) | 4th | 160 | 52% | +1.09% | +1.10 lakh | 8 / 15 |
+| hard stop 10% (instead of 12%) | 4th | 173 | 53% | +1.68% | +2.13 lakh | 9 / 15 |
+
+Reading it honestly: every guard variant beats the baseline per trade in both replays, but with 15 days the
+margins are 1-1.5 standard errors, and the entry guards' rupee gain is large in one replay and absent in the
+other. The gain concentrates on the four expiry days. A wider trail and a tighter hard stop are no better
+than the shipped 6% / 12%.
+
+**Defaults chosen:** `entry.rebuy_guard: "on"`, `entry.momentum_guard_secs: 30` (`momentum_min_pts: 3`) --
+they only delay an entry and they target the two entry types that lost money on the tape. The protective
+stop reverses the earlier operator rule "no breakeven"; the operator switched it ON on 10 Nov 2026 after
+seeing this table (`execution.breakeven_arm_pct: 0.06`, `breakeven_lock_pct: 0.01`; `0` switches it off). To go back to the 2.1 entry behaviour set
+`rebuy_guard: "off"` and `momentum_guard_secs: 0`.
+
+## Tools
+- `tools/lab.py`: engine-true what-if over every recorded day (NIFTY only, no tape writing; the baseline
+  reproduces the live P&L, e.g. 21 Oct: 9 trades +78.3k in the lab, 9 trades +78.7k live).
+- `tools/trade_review.py`: every trade with its entry context, grouped by entry type; CSV export.
+- Every closed trade is now a `TRADE` event (entry context, peak / low of the premium, exit), and every
+  `APPROACH_ALERT` carries `move_30s`, `move_120s`, `secs_since_exit`, `after`, `exch_lag_s`, `breached`.
+
+## Dashboard
+- Header pill "feed N s late" (green < 2 s, amber 2-6 s, red above) and a standing "ENTRIES PAUSED" banner.
+- WHY-NO-TRADE explains the new waits; a guards line shows what is switched on.
+- Trade journal: hold time, peak % / low % of the premium, context chips, day equity sparkline.
+- Open position: a stop ladder (hard stop, entry, protective stop, +7% floor, +10% arm, peak, trail floor).
+- Fixed: a placeholder row stayed in keyed tables when the page was opened mid-session; the position P&L lost
+  its large font once it had a sign.
+
+Tests: `tests/test_feed_22.py`, `test_entry_guards_22.py`, `test_protective_stop_22.py`, `test_perf_22.py`,
+`test_tools_22.py` (39 new). Not verifiable on a holiday: the buffered reader against the real Breeze socket.
+
+
 # 2.1.1 — the 3 Nov morning: spot frozen 36 min, socket dropped every 30 s (3 Nov 2026, intraday fix)
 
 Diagnosed live from the 3 Nov tape / SDK log while the engine was running.

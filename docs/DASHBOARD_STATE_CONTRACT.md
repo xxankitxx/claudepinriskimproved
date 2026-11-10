@@ -1,4 +1,4 @@
-# VAJRA dashboard — data contract (2.1)
+# VAJRA dashboard — data contract (2.1, with the 2.2 additions at the end)
 
 The cockpit is a static page served by `vajra/dashboard.py` from `vajra/static/`:
 
@@ -105,3 +105,45 @@ Class names the frozen scripts apply: `pill`, `snd-on`, `snd-muted`, `snd-bad`, 
 * Never show "BUY NIFTY …" while a gate blocks the entry (`arming.target` is already null then; `entry_block` says why).
 * Level history goes at the very bottom. Sister/stock breaches never make a sound.
 * Times are IST (the machine clock); format `HH:MM:SS`; money in ₹ with Indian grouping (`toLocaleString('en-IN')`).
+
+## 2.2 additions (feed lateness, entry guards, journal context, stop ladder)
+
+Everything below is optional: any field may be null / absent (replay has `ws: null` and `feed_lag.lag_s: null`);
+`ui.js` then renders a dash or nothing, never `undefined` / `NaN`.
+
+State fields `ui.js` now reads:
+
+```
+ws.exch_lag_s, ws.drops, ws.backlog      header pill `exlagpill` ("feed 1.2 s late": calm < 2 s, amber 2-6 s, red > 6 s or while closed;
+                                         drops + backlog in its tooltip). Falls back to feed_lag.lag_s when ws has no number.
+feed_lag            {closed: bool, limit_s: number, lag_s: number|null}
+                    closed=true -> the standing `lagbanner` "ENTRIES PAUSED: NIFTY feed is N s behind the exchange";
+                    with idle.gate FEED_UNHEALTHY and feed_health.ok != false the WHY-NO-TRADE text says "entries paused - NIFTY feed N s late".
+guards              {retreat_secs, retreat_pts, momentum_min_pts, rebuy: bool, max_breach_pts,
+                     rebuy_wait: null|{dir:'UP'|'DOWN', beyond}, breakeven: null|{arm_pct, lock_pct}}   (0 / false / null = off)
+                    -> the quiet `guards` line under WHY-NO-TRADE: "momentum: +3 pts / 30s" (momentum_min_pts > 0) or "no-retreat 30s",
+                       "re-buy needs new high/low" (or "re-buy ▲ needs NIFTY above 24,950" while rebuy_wait is set), "max breach N pts",
+                       "protective stop +6% → +1%", "late-feed pause 6 s" (from feed_lag.limit_s). The guard holding an entry right now lights up.
+journal[].peak_pct, .low_pct             option premium best / worst vs entry, in % (closed rows and the live open row)
+journal[].ctx       null | {move_30s, move_120s, secs_since_exit, after:'profit'|'stop'|null, exch_lag_s, breached: bool}
+                    -> context chips: "re-buy 15s after profit" (same side as the previous trade; "flip ..." otherwise; only within 15 min),
+                       "40s after stop", "feed 8s late" (>= 2 s), "breached", "moving away −3.4" (move_30s <= −2); the rest is in the tooltip.
+position.exit_plan  {hard_sl, trail_activate, min_profit, be_arm, be_lock, be_armed}
+                    active stop = hard_sl -> be_lock once be_armed -> trail_floor once trail_armed (be_arm / be_lock null = rule off)
+```
+
+Gate codes added to `idle.gate` (after POST_PROFIT_COOLDOWN / NO_APPROACH): ENTRY_RETREATING, REBUY_WAIT, BREACH_TOO_DEEP.
+They are "wait" states: WHY-NO-TRADE shows `WAIT — <reason>` in the cooldown violet (class `gate-cool gate-wait`), never as an error.
+The reason is `arming.entry_block` when it starts with "WAIT" (displayed as it arrives), else a built-in sentence
+(`idle.text` is ignored for these three gates). Exit reason added: BE_STOP ("Protective stop", coloured by the P&L sign).
+
+New element ids owned by `ui.js` (none of them is touched by the frozen scripts):
+* `exlagpill` — exchange-feed lateness pill (classes `xl-na|xl-ok|xl-warn|xl-bad`). `lagpill` stays data.js's delivery-lag pill.
+* `lagbanner`, `lagbanner-text`, `lagbanner-sub` — the ENTRIES PAUSED banner (between the header and the SCREAM).
+* `guards`, `guards-list` — the guards line.
+* `ladder`, `lad-risk`, `lad-lock`, `lad-gap`, `lad-sl`, `lad-entry`, `lad-minp`, `lad-arm`, `lad-bearm`, `lad-belock`, `lad-floor`,
+  `lad-peak`, `lad-now` (+ `-l` label spans), `lad-cap-stop`, `lad-cap-lock` — the stop ladder in the position card
+  (static nodes; markers move by `transform` only).
+* `jr-n`, `jr-real`, `jr-closed`, `jr-wl`, `jr-wr`, `jr-streak`, `jr-avgw`, `jr-avgl` — the journal day summary; `jr-spark` is the
+  equity sparkline (redrawn only when the closed-trade set changes). `jr-summary` is gone. The journal table has 15 columns
+  (entry, exit, hold, dir, strike, size, entry ₹, exit ₹, P&L %, P&L ₹, peak %, low %, exit reason, context, confluence).

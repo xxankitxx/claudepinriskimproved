@@ -158,7 +158,10 @@ def test_winner_below_arm_is_held():
 def test_no_breakeven_exit():
     # operator removed breakeven: a trade that was green but never armed (+10%) and falls back
     # to entry is HELD, NOT booked at breakeven. Only the -12% hard stop closes it.
-    ex = Executor(_cfg()); ex.capital = 100_000
+    # 2.2: the operator switched the protective stop ON (10 Nov 2026); this keeps the OFF path honest
+    # (execution.breakeven_arm_pct: 0). The ON behaviour is in tests/test_protective_stop_22.py.
+    cfg = _cfg(); cfg.raw["execution"]["breakeven_arm_pct"] = 0
+    ex = Executor(cfg); ex.capital = 100_000
     band = _band(24108, 24092)
     _enter(ex, 24120, 40.0, band)                       # entry 40
     assert ex.manage(10_000, _snap(24124, 43.0, 5.0)) == []   # +7.5%, trail NOT armed

@@ -1,4 +1,4 @@
-// ==== VAJRA 2.1 PRESENTATION LAYER ===================================================================
+// ==== VAJRA 2.2 PRESENTATION LAYER ===================================================================
 // window.VAJRA_UI.render(state, heavy)  — called by data.js on every coalesced repaint (~4x/s).
 //                                        heavy===true at most ~once a second → big tables repaint then.
 // window.VAJRA_UI.watchdog(status)     — {kind:'ok'|'closed'|'frozen', text, detail, lastRoundTs}
@@ -42,13 +42,20 @@
     if (h) return h + 'h ' + (m < 10 ? '0' : '') + m + 'm';
     return m + 'm ' + (s < 10 ? '0' : '') + s + 's';
   }
+  function mmss(sec) {                                                                    // hold time: m:ss (h:mm:ss past an hour)
+    if (!isNum(sec) || sec < 0) return '—'; sec = Math.round(sec);
+    const h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60), x = sec % 60;
+    return (h ? h + ':' + (m < 10 ? '0' : '') : '') + m + ':' + (x < 10 ? '0' : '') + x;
+  }
+  const secs = v => (v < 10 ? n(v, 1) : String(Math.round(v)));                           // "1.2" / "14"
+  const trim = v => n(v, Math.abs(v - Math.round(v)) < 0.05 ? 0 : 1);                     // "6" / "2.5"
   function ago(now, ts) { if (!isNum(now) || !isNum(ts)) return ''; return dur((now - ts) / 1000) + ' ago'; }
   function atHM(ref, hhmm) { if (!isNum(ref) || !hhmm) return null; const p = S(hhmm).split(':'); if (p.length < 2) return null; const d = new Date(ref); d.setHours(+p[0], +p[1], p[2] ? +p[2] : 0, 0); return d.getTime(); }
   function expLabel(iso) { if (!iso) return ''; const d = new Date(S(iso) + 'T00:00:00'); if (isNaN(d)) return S(iso); try { return DMON.format(d).replace(' ', '-').toUpperCase(); } catch (e) { return S(iso); } }
   const sgnCls = v => (isNum(v) ? (v > 0 ? 'up' : v < 0 ? 'dn' : '') : '');
   const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
   const get = (o, k, d) => (o && o[k] != null ? o[k] : d);
-  const EXIT = Object.assign(Object.create(null), { TRAIL_SL: ['Trail SL', 'rs-trail'], SL_HIT: ['Hard SL −12%', 'rs-sl'], EXPIRY_FLATTEN: ['Square-off', 'rs-flat'], END_OF_SESSION: ['End of session', 'rs-flat'] });
+  const EXIT = Object.assign(Object.create(null), { TRAIL_SL: ['Trail SL', 'rs-trail'], SL_HIT: ['Hard SL −12%', 'rs-sl'], BE_STOP: ['Protective stop', 'rs-be'], EXPIRY_FLATTEN: ['Square-off', 'rs-flat'], END_OF_SESSION: ['End of session', 'rs-flat'] });
   function exitReason(r, s) { const m = EXIT[S(r)]; if (!m) return [S(r) || '—', '']; let t = m[0]; if (S(r) === 'EXPIRY_FLATTEN') { const fb = get(get(s.regime, 'closing', null), 'flatten_before', null); if (fb) t += ' ' + fb; } return [t, m[1]]; }
 
   // ---------- module state --------------------------------------------------------------------------
@@ -78,17 +85,36 @@
   }
   // the BUY target is shown ONLY when nothing blocks the entry (belt and braces over the engine's own null)
   function buyAllowed(s) { const a = s.arming || {}, eb = a.entry_block; return !!(a.target && a.target.action) && (eb == null || eb === 'ENTERED') && !get(s.cooldown, 'stop_cooldown_active', false) && !inTrade(s); }
-  function noTradeReason(s) { const a = s.arming || {}; const eb = a.entry_block; return (eb && eb !== 'ENTERED') ? S(eb) : (get(s.cooldown, 'stop_cooldown_active', false) ? 'post-stop cooldown ' + dur(get(s.cooldown, 'stop_cooldown_remaining_secs', null)) : S(get(s.idle, 'text', '')) || 'entry blocked'); }
+  function noTradeReason(s) { const a = s.arming || {}; const eb = a.entry_block; const wg = waitGate(s); if (wg) return waitWhy(s, wg);
+    if (lagClosed(s) && !(eb && eb !== 'ENTERED') && !get(s.cooldown, 'stop_cooldown_active', false)) { const l = lagSecs(s); return 'NIFTY feed ' + (isNum(l) ? secs(l) + ' s ' : '') + 'late — entries paused'; } return (eb && eb !== 'ENTERED') ? S(eb) : (get(s.cooldown, 'stop_cooldown_active', false) ? 'post-stop cooldown ' + dur(get(s.cooldown, 'stop_cooldown_remaining_secs', null)) : S(get(s.idle, 'text', '')) || 'entry blocked'); }
   function nextStop(pos) {
-    // the number the operator lives on: premium (₹) distance to whatever will take him out next
+    // the number the operator lives on: premium (₹) distance to whatever will take him out next.
+    // kind: 'hard' (hard SL) → 'be' (2.2 protective stop: exit_plan.be_lock once be_armed) → 'trail' (trail floor once armed)
     if (!pos) return null;
     const ep = pos.exit_plan || {};
     const armed = !!pos.trail_armed && isNum(pos.trail_floor);
-    const stop = armed ? pos.trail_floor : ep.hard_sl;
+    const be = !armed && ep.be_armed === true && isNum(ep.be_lock);
+    const kind = armed ? 'trail' : be ? 'be' : 'hard';
+    const stop = armed ? pos.trail_floor : be ? ep.be_lock : ep.hard_sl;
     const dist = (isNum(pos.last_premium) && isNum(stop)) ? pos.last_premium - stop : null;
-    let mode = armed ? 'TRAILING' : 'ARMING';
-    if (!armed && isNum(dist) && isNum(pos.entry_fill) && pos.entry_fill > 0 && dist / pos.entry_fill <= 0.04) mode = 'HARD-STOP NEAR';
-    return { stop, dist, mode, armed };
+    let mode = armed ? 'TRAILING' : be ? 'PROTECTED' : 'ARMING';
+    if (kind === 'hard' && isNum(dist) && isNum(pos.entry_fill) && pos.entry_fill > 0 && dist / pos.entry_fill <= 0.04) mode = 'HARD-STOP NEAR';
+    return { stop, dist, mode, armed, kind, name: armed ? 'trail floor' : be ? 'protective stop' : 'hard SL' };
+  }
+  // ---- 2.2: exchange-feed lateness + the entry "wait" guards ------------------------------------------
+  // lateness of the NIFTY tick stream vs the exchange clock (ws.exch_lag_s; feed_lag.lag_s as a fallback). null in replay.
+  function lagSecs(s) { const w = s.ws, f = s.feed_lag; return w && isNum(w.exch_lag_s) ? Math.max(0, w.exch_lag_s) : (f && isNum(f.lag_s) ? Math.max(0, f.lag_s) : null); }
+  function lagClosed(s) { return !!(s.feed_lag && s.feed_lag.closed === true); }
+  const WAIT = Object.assign(Object.create(null), { ENTRY_RETREATING: 1, REBUY_WAIT: 1, BREACH_TOO_DEEP: 1 });
+  function waitGate(s) { const g = get(s.idle, 'gate', null); return g && WAIT[g] ? g : null; }
+  // the plain-words reason for a wait gate, without the "WAIT" prefix (the engine's ready sentence wins)
+  function waitWhy(s, gate) {
+    const eb = get(s.arming, 'entry_block', null), g = s.guards || {};
+    if (typeof eb === 'string' && /^WAIT\b/i.test(eb)) { const t = eb.replace(/^WAIT\s*[-—–:]*\s*/i, ''); if (t) return t; }
+    if (gate === 'REBUY_WAIT') { const rw = g.rebuy_wait; return 're-buy needs NIFTY ' + (rw && isNum(rw.beyond) ? (rw.dir === 'DOWN' ? 'below ' : rw.dir === 'UP' ? 'above ' : 'beyond ') + n0(rw.beyond) : "beyond the last trade's best price"); }
+    if (gate === 'ENTRY_RETREATING') return 'NIFTY is moving away from the level';
+    if (gate === 'BREACH_TOO_DEEP') return 'NIFTY is already far through the level' + (isNum(g.max_breach_pts) && g.max_breach_pts > 0 ? ' (more than ' + trim(g.max_breach_pts) + ' pts)' : '');
+    return 'entry is waiting';
   }
   const dirGlyph = d => (d === 'UP' ? '▲' : d === 'DOWN' ? '▼' : '');
   function posLabel(pos) { return dirGlyph(pos.direction) + ' ' + K(pos.strike) + ' ' + S(pos.right); }
@@ -125,6 +151,18 @@
       cls('ch-ws', 'chip ' + (bad ? 'bad' : (ws.reconnecting || ws.sdk_reconnecting ? 'warn' : 'ok')));
       attr('ch-ws', 'title', 'broker socket · tick age ' + age + ' · ticks ' + (ws.ticks || 0) + ' · bad ' + (ws.bad_ticks || 0) + ' · tokens ' + (ws.tokens || 0) + ' · connects ' + (ws.connects || 0) + ' · drops ' + (ws.drops || 0) + ' · reconnects ok ' + (ws.reconnects_ok || 0) + ' / failed ' + (ws.reconnects_failed || 0) + ' · sub errors ' + (ws.sub_errors || 0) + (ws.last_error ? ' · ' + S(ws.last_error) : ''));
     } else show('ch-ws', false);
+    // 2.2 exchange-feed lateness: its own pill (NOT lagpill, which is engine→browser delivery) + the standing pause banner
+    const lag = lagSecs(s), fl = s.feed_lag || {}, closed = lagClosed(s);
+    if (isNum(lag)) { txt('exlagpill', 'feed ' + secs(lag) + ' s late'); cls('exlagpill', 'pill ' + (lag > 6 || closed ? 'xl-bad' : lag >= 2 ? 'xl-warn' : 'xl-ok')); }
+    else { txt('exlagpill', closed ? 'feed LATE' : 'feed —'); cls('exlagpill', 'pill ' + (closed ? 'xl-bad' : 'xl-na')); }
+    const wsx = ws ? ' · socket drops today ' + (isNum(ws.drops) ? ws.drops : 0) + (isNum(ws.backlog) ? ' · backlog ' + ws.backlog + ' packets' : '') : '';
+    attr('exlagpill', 'title', (isNum(lag) ? 'NIFTY ticks arrive ' + secs(lag) + ' s behind the exchange clock' : 'NIFTY feed lateness vs the exchange clock: not measured (replay, or the socket is not reporting)')
+      + wsx + (isNum(fl.limit_s) && fl.limit_s > 0 ? ' · new entries pause above ' + trim(fl.limit_s) + ' s' : '') + ' · (the "live … ms" pill is engine → browser delivery)');
+    show('lagbanner', closed);
+    if (closed) {
+      txt('lagbanner-text', 'ENTRIES PAUSED: NIFTY feed is ' + (isNum(lag) ? secs(lag) + ' s' : 'running') + ' behind the exchange');
+      txt('lagbanner-sub', (isNum(fl.limit_s) && fl.limit_s > 0 ? 'limit ' + trim(fl.limit_s) + ' s · ' : '') + (inTrade(s) ? 'the open position is still managed' : 'no new entries until the feed catches up') + (ws && isNum(ws.drops) && ws.drops > 0 ? ' · ' + ws.drops + ' socket drop' + (ws.drops === 1 ? '' : 's') + ' today' : ''));
+    }
     // 2.1 machine power (live on Windows): visible only when the engine reports it; red on battery
     const pw = s.power;
     if (pw && (pw.on_battery === true || pw.on_battery === false)) {
@@ -184,16 +222,16 @@
     }
     else {
       const A = S(a.state) || 'STAND_BY', allowed = buyAllowed(s), tg = a.target || {};
-      const tgTxt = 'BUY ' + K(tg.strike) + ' ' + S(tg.right);
+      const tgTxt = 'BUY ' + K(tg.strike) + ' ' + S(tg.right), wg = waitGate(s);
       if (A === 'BREACHED') {
         st = (D.side === 'LOWER' || (D.side == null && a.lean === 'DOWN')) ? 'breached-dn' : 'breached-up'; glyph = st === 'breached-dn' ? '▼' : '▲'; role = 'alert';
         const thru = D.side === 'UPPER' ? D.du : D.dd;
-        text = 'BREACHED ' + lvlTxt + (isNum(thru) ? ' · ' + n(Math.abs(thru), 1) + ' pts through' : '') + (allowed ? ' · ' + tgTxt : ' · NO TRADE');
-        if (!allowed) side += kv('no trade', noTradeReason(s));
+        text = 'BREACHED ' + lvlTxt + (isNum(thru) ? ' · ' + n(Math.abs(thru), 1) + ' pts through' : '') + (allowed ? ' · ' + tgTxt : wg ? ' · WAIT' : ' · NO TRADE');
+        if (!allowed) side += kv(wg ? 'waiting' : 'no trade', noTradeReason(s));
       } else if (A === 'ABOUT_TO_BREACH') {
         st = 'about'; glyph = '⚠';
-        text = 'APPROACHING ' + lvlTxt + (isNum(D.d) ? ' · ' + n(D.d, 1) + ' pts' : '') + (allowed ? ' · ' + tgTxt : '');
-        if (!allowed && (a.entry_block || cd.stop_cooldown_active)) side += kv('no trade', noTradeReason(s));
+        text = 'APPROACHING ' + lvlTxt + (isNum(D.d) ? ' · ' + n(D.d, 1) + ' pts' : '') + (allowed ? ' · ' + tgTxt : wg ? ' · WAIT' : '');
+        if (!allowed && (a.entry_block || cd.stop_cooldown_active || wg || lagClosed(s))) side += kv(wg ? 'waiting' : 'no trade', noTradeReason(s));
       } else {
         st = A === 'WATCHING' ? 'watching' : 'standby'; glyph = A === 'WATCHING' ? '◎' : '○';
         text = (A === 'WATCHING' ? 'WATCHING' : 'STAND-BY') + (lvlTxt ? ' · ' + lvlTxt + (isNum(D.d) ? ' in ' + n(D.d, 1) + ' pts' : '') : (isNum(nf_.spot) ? ' · no levels yet' : ''));
@@ -213,6 +251,10 @@
     else if (gate === 'FEED_UNHEALTHY' || gate === 'LEVELS_STALE' || gate === 'NO_LEVELS') gc = 'gate-bad';
     else if (gate === 'POSITION_ACTIVE') gc = 'gate-trade';
     else if (gate === 'BEFORE_TRADE_START' || gate === 'AFTER_LAST_ENTRY') gc = 'gate-calm';
+    // 2.2: the three "wait" guards are a pause by design (styled like the cooldown, never as an error)
+    if (gate && WAIT[gate]) { gtxt = 'WAIT — ' + waitWhy(s, gate); gc = 'gate-cool gate-wait'; }
+    // 2.2: FEED_UNHEALTHY raised by the late-feed pause (the feed itself is alive, only late)
+    else if (gate === 'FEED_UNHEALTHY' && lagClosed(s) && get(s.feed_health, 'ok', true) !== false) { const l = lagSecs(s), lim = get(s.feed_lag, 'limit_s', null); gtxt = 'entries paused — NIFTY feed ' + (isNum(l) ? secs(l) + ' s ' : '') + 'late' + (isNum(lim) && lim > 0 ? ' (limit ' + trim(lim) + ' s)' : ''); }
     txt('wnt-text', gtxt); attr('wnt-text', 'title', gtxt); cls('wnt-text', 'wnt-text ' + gc);
     txt('wnt-code', gate ? S(gate) : '');
     const prox = proxPts(s);
@@ -232,6 +274,33 @@
     const le = lastEntryTs(s);
     txt('wnt-lastentry', (le ? hms(le) : 'none') + (rg.last_entry ? ' · cutoff ' + S(rg.last_entry) : ''));
     txt('wnt-squareoff', S(get(rg.closing, 'flatten_before', null)) || '—');
+  }
+
+  // 2.2 the quiet guards line: which entry guards are switched on; the one that is holding an entry right now lights up
+  function rGuards(s) {
+    const g = s.guards, fl = s.feed_lag;
+    if ((!g || typeof g !== 'object') && (!fl || typeof fl !== 'object')) { show('guards', false); return; }
+    const gate = get(s.idle, 'gate', null), out = [];
+    const chip = (t, k, tip) => out.push('<span class="gchip' + (k ? ' ' + k : '') + '"' + (tip ? ' title="' + esc(tip) + '"' : '') + '>' + esc(t) + '</span>');
+    if (g && typeof g === 'object') {
+      if (isNum(g.retreat_secs) && g.retreat_secs > 0) {
+        const mo = isNum(g.momentum_min_pts) && g.momentum_min_pts > 0, on = gate === 'ENTRY_RETREATING' ? 'on' : '';
+        if (mo) chip('momentum: +' + trim(g.momentum_min_pts) + ' pts / ' + dur(g.retreat_secs), on, 'an entry waits until NIFTY has moved at least ' + trim(g.momentum_min_pts) + ' pts toward the level over the last ' + dur(g.retreat_secs));
+        else chip('no-retreat ' + dur(g.retreat_secs) + (isNum(g.retreat_pts) && g.retreat_pts > 0 ? ' / ' + trim(g.retreat_pts) + ' pts' : ''), on,
+          'an entry waits while NIFTY is moving away from the level' + (isNum(g.retreat_pts) && g.retreat_pts > 0 ? ' by more than ' + trim(g.retreat_pts) + ' pts' : '') + ' over the last ' + dur(g.retreat_secs));
+      }
+      if (g.rebuy) {
+        const rw = g.rebuy_wait, tip = 'after a profitable exit, a same-side re-buy waits until NIFTY passes the previous trade\'s best price';
+        if (rw && typeof rw === 'object' && isNum(rw.beyond)) chip('re-buy ' + dirGlyph(rw.dir) + ' needs NIFTY ' + (rw.dir === 'DOWN' ? 'below ' : rw.dir === 'UP' ? 'above ' : 'beyond ') + n0(rw.beyond), gate === 'REBUY_WAIT' ? 'on' : 'armed', tip);
+        else chip('re-buy needs new high/low', '', tip);
+      }
+      if (isNum(g.max_breach_pts) && g.max_breach_pts > 0) chip('max breach ' + trim(g.max_breach_pts) + ' pts', gate === 'BREACH_TOO_DEEP' ? 'on' : '', 'no entry once NIFTY is already more than ' + trim(g.max_breach_pts) + ' pts through the level');
+    }
+    const be = g && typeof g === 'object' ? g.breakeven : null;
+    if (be && typeof be === 'object' && isNum(be.arm_pct) && isNum(be.lock_pct)) { const P = v => (v >= 0 ? '+' : '−') + trim(Math.abs(v * 100)) + '%'; chip('protective stop ' + P(be.arm_pct) + ' → ' + P(be.lock_pct), '', 'once a trade has been up ' + P(be.arm_pct) + ', it is stopped out if the premium comes back to ' + P(be.lock_pct) + ' (exit reason: protective stop)'); }
+    if (fl && isNum(fl.limit_s) && fl.limit_s > 0) chip('late-feed pause ' + trim(fl.limit_s) + ' s', fl.closed === true ? 'bad' : '', 'new entries pause while the NIFTY feed is more than ' + trim(fl.limit_s) + ' s behind the exchange');
+    show('guards', true);
+    html('guards-list', out.length ? out.join('') : '<span class="gchip off">none switched on</span>');
   }
 
   function rHero(s) {
@@ -274,7 +343,7 @@
     // BUY callout (one colour, never red) — or the reason there is no trade on a breach/approach
     const a = s.arming || {}, A = S(a.state);
     if (buyAllowed(s)) { const tg = a.target; show('buy', true); txt('buy-k', 'BUY'); txt('buy-text', 'NIFTY ' + expLabel(get(s.expiry, 'date', '')) + ' ' + K(tg.strike) + ' ' + (tg.right === 'PE' ? '▼ PE' : tg.right === 'CE' ? '▲ CE' : S(tg.right)) + (tg.label && !/\d{5}/.test(S(tg.label)) ? ' · ' + S(tg.label) : '')); cls('buy', 'buy'); }
-    else if (!trade && (A === 'BREACHED' || A === 'ABOUT_TO_BREACH')) { show('buy', true); txt('buy-k', 'NO TRADE'); txt('buy-text', noTradeReason(s)); cls('buy', 'buy no'); }
+    else if (!trade && (A === 'BREACHED' || A === 'ABOUT_TO_BREACH')) { const wg = waitGate(s); show('buy', true); txt('buy-k', wg ? 'WAIT' : 'NO TRADE'); txt('buy-text', noTradeReason(s)); cls('buy', 'buy no' + (wg ? ' wait' : '')); }
     else show('buy', false);
     // stats
     txt('atm-strike', K(nf_.atm));
@@ -310,7 +379,7 @@
     else if (A === 'WATCHING') { sc = 'st-watching'; label = 'WATCHING' + (a.side ? ' ' + S(a.side) : ''); }
     txt('sc-state', label); cls('sc-state', 'sc-state ' + sc);
     txt('sc-lean', a.lean ? 'lean ' + S(a.lean) : 'lean —'); cls('sc-lean', 'badge ' + (a.lean === 'UP' ? 'b-ok' : a.lean === 'DOWN' ? 'b-bad' : 'b-mut'));
-    if (a.entry_block) { show('sc-block', true); txt('sc-block', S(a.entry_block)); cls('sc-block', 'badge ' + (a.entry_block === 'ENTERED' ? 'b-blu' : /COOLDOWN/i.test(S(a.entry_block)) ? 'b-vio' : 'b-warn')); }
+    if (a.entry_block) { show('sc-block', true); txt('sc-block', S(a.entry_block)); cls('sc-block', 'badge ' + (a.entry_block === 'ENTERED' ? 'b-blu' : /COOLDOWN|^WAIT\b/i.test(S(a.entry_block)) ? 'b-vio' : 'b-warn')); }
     else show('sc-block', false);
     const msg = S(a.message) || (isNum(s.round_ts) ? '' : 'engine pre-open');
     txt('sc-msg', msg); attr('sc-msg', 'title', msg || null);
@@ -340,16 +409,16 @@
     show('pos-flat', false); show('pos-open', true);
     const ns = nextStop(pos), et = entryTs(s);
     txt('pos-ticket', ticket(s));
-    show('pos-mode', true); txt('pos-mode', ns.mode + (ns.armed ? '' : ' · trail not armed')); cls('pos-mode', 'badge ' + (ns.mode === 'TRAILING' ? 'b-ok' : ns.mode === 'HARD-STOP NEAR' ? 'b-bad' : 'b-blu'));
+    show('pos-mode', true); txt('pos-mode', ns.mode + (ns.armed ? '' : ' · trail not armed')); cls('pos-mode', 'badge ' + (ns.mode === 'TRAILING' || ns.mode === 'PROTECTED' ? 'b-ok' : ns.mode === 'HARD-STOP NEAR' ? 'b-bad' : 'b-blu'));
     if (isNum(et) && isNum(rt)) { show('pos-time', true); txt('pos-time', 'held ' + dur((rt - et) / 1000) + ' · in ' + hms(et)); } else show('pos-time', false);
     html('pos-dir', esc(posLabel(pos)) + '<small>' + (pos.direction === 'UP' ? 'long CE' : pos.direction === 'DOWN' ? 'long PE' : '') + (isNum(pos.qty_remaining) ? ' · ' + n0(pos.qty_remaining) + ' qty' : '') + '</small>');
     cls('pos-dir', 'pos-dir ' + (pos.direction === 'UP' ? 'up' : pos.direction === 'DOWN' ? 'dn' : ''));
     txt('pos-stopdist', isNum(ns.dist) ? '₹' + n(ns.dist, 2) : '—');
     const dfrac = isNum(ns.dist) && isNum(pos.entry_fill) && pos.entry_fill > 0 ? ns.dist / pos.entry_fill : 1;
     cls('pos-stopdist', 'v num ' + (dfrac <= 0.03 ? 'bad' : dfrac <= 0.06 ? 'warn' : ''));
-    txt('pos-stopat', 'prem · ' + (ns.armed ? 'trail floor ' : 'SL ') + (isNum(ns.stop) ? n(ns.stop) : '—'));
+    txt('pos-stopat', 'prem · ' + (ns.kind === 'hard' ? 'SL ' : ns.name + ' ') + (isNum(ns.stop) ? n(ns.stop) : '—'));
     const upnl = pos.unrealized_pnl, upct = isNum(upnl) && isNum(pos.cost) && pos.cost > 0 ? 100 * upnl / pos.cost : null;
-    txt('pos-pnl', inrS(upnl)); txt('pos-pnlpct', isNum(upct) ? pct(upct, 2) + ' of entry' : ''); cls('pos-pnl', 'pos-pnl ' + sgnCls(upnl));
+    txt('pos-pnl', inrS(upnl)); txt('pos-pnlpct', isNum(upct) ? pct(upct, 2) + ' of entry' : ''); cls('pos-pnl', 'v num ' + sgnCls(upnl)); cls('pos-pnlpct', 's num ' + sgnCls(upnl));
     txt('pos-entry', n(pos.entry_fill)); txt('pos-peak', n(pos.peak_premium)); txt('pos-now', n(pos.last_premium));
     const given = isNum(pos.peak_premium) && isNum(pos.last_premium) ? pos.peak_premium - pos.last_premium : null;
     txt('pos-given', isNum(given) ? '₹' + n(given, 2) + (isNum(pos.peak_premium) && pos.peak_premium > 0 ? ' (' + n(100 * given / pos.peak_premium, 1) + '%)' : '') : '—'); cls('pos-given', 'v num ' + (isNum(given) && given > 0 ? 'warn' : ''));
@@ -357,10 +426,11 @@
     txt('pos-qty', (isNum(pos.qty_remaining) ? n0(pos.qty_remaining) : '—') + (isNum(pos.qty_total) && pos.qty_total !== pos.qty_remaining ? ' / ' + n0(pos.qty_total) : '') + ' · ' + (isNum(pos.lots) ? pos.lots + ' lot' + (pos.lots === 1 ? '' : 's') : '—'));
     txt('pos-deployed', inr(isNum(cap.deployed) ? cap.deployed : pos.cost));
     const ep = pos.exit_plan || {};
-    txt('pos-hsl', isNum(ep.hard_sl) ? n(ep.hard_sl) : '—'); cls('pos-hsl', 'v num ' + (!ns.armed ? 'bad' : ''));
+    txt('pos-hsl', isNum(ep.hard_sl) ? n(ep.hard_sl) : '—'); cls('pos-hsl', 'v num ' + (ns.kind === 'hard' ? 'bad' : ''));
     txt('pos-tact', isNum(ep.trail_activate) ? n(ep.trail_activate) + (ns.armed ? ' ✓' : '') : '—');
     txt('pos-minp', isNum(ep.min_profit) ? n(ep.min_profit) : '—');
     txt('pos-real', isNum(pos.realized_pnl) && pos.realized_pnl !== 0 ? inrS(pos.realized_pnl) : '—');
+    rLadder(pos, ns, dfrac);
     // ring buffer of premium vs stop (client side); redrawn only when it advances
     const key = S(pos.direction) + '|' + S(pos.strike) + '|' + S(pos.right) + '|' + S(et);
     if (ring.key !== key) { ring.key = key; ring.t.length = ring.p.length = ring.s.length = 0; ring.lastT = 0; ring.dirty = true; }
@@ -370,6 +440,59 @@
       ring.dirty = true;
     }
     if (ring.dirty && (heavy || ring.t.length <= 2)) { ring.dirty = false; drawPosSpark(pos); }
+  }
+  // 2.2 STOP LADDER: one premium scale — hard stop · entry · +floor · arm point · trail floor · peak · now.
+  // Every node is static; markers are track-wide wrappers moved by translateX(% of the track), zones are
+  // translateX+scaleX. Labels are placed greedily (priority order) so neighbours never overprint.
+  const LAD_PX = 6.5 / 4.4;                                    // one 10.5-px mono character as % of a ~440-px track
+  function rLadder(pos, ns, dfrac) {
+    const ep = pos.exit_plan || {}, e = pos.entry_fill, now = pos.last_premium;
+    if (!isNum(e) || e <= 0 || !isNum(now)) { show('ladder', false); return; }
+    show('ladder', true);
+    const sl = ep.hard_sl, mp = ep.min_profit, arm = ep.trail_activate, pk = pos.peak_premium, fl = ns.armed ? pos.trail_floor : null;
+    const bea = isNum(ep.be_arm) ? ep.be_arm : null, bel = isNum(ep.be_lock) ? ep.be_lock : null, beOn = ep.be_armed === true;   // protective stop (null = rule off)
+    let lo = e, hi = e;
+    for (const v of [sl, mp, arm, pk, fl, now, bea, bel]) if (isNum(v)) { if (v < lo) lo = v; if (v > hi) hi = v; }
+    let span = hi - lo; if (span < e * 0.02) span = e * 0.02;
+    lo -= span * 0.10; hi += span * 0.10;
+    const X = v => clamp((v - lo) / (hi - lo) * 100, 0, 100);
+    const mv = (id, v) => { const ok = isNum(v); show(id, ok); if (ok) style(id, 'transform', 'translateX(' + X(v).toFixed(2) + '%)'); };
+    const seg = (id, a, b) => { const ok = isNum(a) && isNum(b) && b > a; show(id, ok); if (ok) style(id, 'transform', 'translateX(' + X(a).toFixed(2) + '%) scaleX(' + ((X(b) - X(a)) / 100).toFixed(4) + ')'); };
+    const pl = v => { const p = (v / e - 1) * 100; return (p >= 0 ? '+' : '−') + trim(Math.abs(p)) + '%'; };
+    mv('lad-sl', sl); mv('lad-entry', e); mv('lad-minp', mp); mv('lad-arm', arm); mv('lad-floor', fl); mv('lad-bearm', bea); mv('lad-belock', bel); mv('lad-peak', pk); mv('lad-now', now);
+    cls('lad-sl', 'lad-m sl' + (ns.kind === 'hard' ? ' act' : '')); cls('lad-belock', 'lad-m belock' + (ns.kind === 'be' ? ' act' : beOn ? ' done' : '')); cls('lad-bearm', 'lad-m bearm' + (beOn ? ' done' : '')); cls('lad-floor', 'lad-m floor' + (ns.armed ? ' act' : '')); cls('lad-arm', 'lad-m arm' + (ns.armed ? ' done' : ''));
+    attr('lad-peak', 'title', isNum(pk) ? 'peak ' + n(pk) + ' (' + pl(pk) + ')' : null);
+    seg('lad-risk', sl, e);
+    seg('lad-lock', e, ns.kind !== 'hard' && isNum(ns.stop) && ns.stop > e ? ns.stop : null);
+    seg('lad-gap', ns.stop, now);
+    cls('lad-gap', 'lad-seg gap' + (dfrac <= 0.03 ? ' bad' : dfrac <= 0.06 ? ' warn' : ''));
+    // bottom-row labels (scale ticks), greedy by priority; the top row carries only the live premium
+    const placed = [];
+    const put = (id, v, t) => {
+      if (!isNum(v) || !t) { txt(id, ''); return; }
+      const x = X(v), w = t.length * LAD_PX;
+      for (const q of placed) if (Math.abs(q[0] - x) < (q[1] + w) / 2 + 1.5) { txt(id, ''); return; }
+      placed.push([x, w]); txt(id, t);
+    };
+    put('lad-sl-l', sl, 'SL ' + n(sl));
+    if (ns.kind === 'be') put('lad-belock-l', bel, 'protect ' + n(bel));          // the live protective stop outranks the entry tick beside it
+    put('lad-entry-l', e, 'entry ' + n(e));
+    put('lad-floor-l', fl, isNum(fl) ? 'trail ' + n(fl) : '');           // once armed, the live trail floor outranks the arm / +floor ticks
+    put('lad-arm-l', arm, isNum(arm) ? pl(arm) + (ns.armed ? ' armed' : ' arm') : '');
+    if (!beOn) put('lad-bearm-l', bea, isNum(bea) ? pl(bea) + ' protect' : ''); else txt('lad-bearm-l', '');
+    put('lad-minp-l', mp, isNum(mp) ? pl(mp) + ' floor' : '');
+    if (ns.kind !== 'be') put('lad-belock-l', bel, isNum(bel) && !ns.armed ? pl(bel) : '');
+    attr('ladder', 'title', (isNum(bea) && isNum(bel) ? 'protective stop: goes live at ' + n(bea) + ' (' + pl(bea) + '), then stops at ' + n(bel) + ' (' + pl(bel) + ')' + (beOn ? ' — LIVE' : '') + ' · ' : '') + 'active stop: ' + ns.name + (isNum(ns.stop) ? ' ' + n(ns.stop) : ''));
+    txt('lad-now-l', n(now) + ' (' + pl(now) + ')'); cls('lad-now', 'lad-m now ' + (now >= e ? 'up' : 'dn') + (X(now) > 80 ? ' rt' : X(now) < 20 ? ' lf' : ''));
+    // caption: how far to the stop · what is locked / at risk if that stop is hit
+    const qty = isNum(pos.qty_remaining) ? pos.qty_remaining : null;
+    if (isNum(ns.dist) && isNum(ns.stop)) {
+      txt('lad-cap-stop', ns.dist >= 0 ? '₹' + n(ns.dist) + (now > 0 ? ' (' + n(100 * ns.dist / now, 1) + '%)' : '') + ' above ' + ns.name + ' ' + n(ns.stop) : 'THROUGH the ' + ns.name + ' ' + n(ns.stop) + ' by ₹' + n(-ns.dist));
+      const out = ns.stop - e, outT = (isNum(qty) ? inrS(out * qty) + ' ' : '') + '(' + pct(100 * out / e, 1) + ')';
+      const nxt = !ns.armed && isNum(arm) && arm > now ? ' · trail arms in ₹' + n(arm - now) : '';
+      if (ns.kind !== 'hard' && out >= 0) { txt('lad-cap-lock', 'locked ' + outT + (ns.kind === 'be' ? nxt : '')); cls('lad-cap-lock', 'up'); }
+      else { txt('lad-cap-lock', 'at risk ' + outT + (ns.kind === 'hard' && !beOn && isNum(bea) && bea > now ? ' · protects in ₹' + n(bea - now) : nxt)); cls('lad-cap-lock', 'dn'); }
+    } else { txt('lad-cap-stop', '—'); txt('lad-cap-lock', ''); cls('lad-cap-lock', ''); }
   }
   function drawPosSpark(pos) {
     const N = ring.p.length, W = 320, H = 64, pad = 4;
@@ -422,7 +545,7 @@
   // Clock cells (ago()/dur()) are registered per table and re-driven by a 1-s ticker, so a row is never
   // rebuilt because time passed. No layout reads anywhere.
   const KT = [];
-  function ktable(id, tag, skel) { const T = { id, tag, skel, rows: new Map(), order: [], ph: null, clk: [] }; KT.push(T); return T; }
+  function ktable(id, tag, skel) { const T = { id, tag, skel, rows: new Map(), order: [], ph: null, clk: [], init: false }; KT.push(T); return T; }
   function ktRow(T) {
     const el = document.createElement(T.tag); el.innerHTML = T.skel;
     const rec = { el, td: Array.prototype.slice.call(el.children), q: Object.create(null), v: Object.create(null) };
@@ -430,17 +553,17 @@
     return rec;
   }
   // placeholder row (empty table); T.ph != null ⇔ no keyed rows are mounted
-  function ktEmpty(T, h) { const body = $(T.id); if (!body || T.ph === h) return; T.rows.clear(); T.order.length = 0; T.clk.length = 0; body.innerHTML = h; T.ph = h; }
+  function ktEmpty(T, h) { const body = $(T.id); if (!body || T.ph === h) return; T.rows.clear(); T.order.length = 0; T.clk.length = 0; body.innerHTML = h; T.ph = h; T.init = true; }
   // make the body's children match `keys` (in order); returns the row records in that order
   function ktSync(T, keys) {
     const body = $(T.id); if (!body) return null;
     const n = keys.length, out = new Array(n); T.clk.length = 0;
-    let same = T.ph == null && n === T.order.length;
+    let same = T.init && T.ph == null && n === T.order.length;
     if (same) for (let i = 0; i < n; i++) if (T.order[i] !== keys[i]) { same = false; break; }
     if (same) { for (let i = 0; i < n; i++) out[i] = T.rows.get(keys[i]); return out; }
     const keep = new Set(keys);
     for (const [k, rec] of T.rows) if (!keep.has(k)) { T.rows.delete(k); rec.el.remove(); }
-    if (T.ph != null) { body.textContent = ''; T.ph = null; }
+    if (T.ph != null || !T.init) { body.textContent = ''; T.ph = null; T.init = true; }      // also drops index.html's static placeholder row
     const frag = document.createDocumentFragment();
     for (let i = 0; i < n; i++) { const k = keys[i]; let rec = T.rows.get(k); if (!rec) { rec = ktRow(T); T.rows.set(k, rec); } frag.appendChild(rec.el); out[i] = rec; }
     body.appendChild(frag); T.order = keys.slice();
@@ -454,11 +577,11 @@
   function kH(rec, el, k, h) { if (rec.v[k] === h) return; el.innerHTML = h; rec.v[k] = h; }
   function kA(rec, el, k, name, v) { if (rec.v[k] === v) return; if (v == null) el.removeAttribute(name); else el.setAttribute(name, v); rec.v[k] = v; }
   function kW(rec, el, k, v) { if (rec.v[k] === v) return; el.style.width = v; rec.v[k] = v; }
-  // clocks: 'ago' → ago(round_ts, ts); 'fresh' → dur(age) extrapolated from round_ts (falls back to the reported age)
+  // clocks: 'ago' → ago(round_ts, ts); 'hold' → m:ss since ts (the open trade's hold time); 'fresh' → dur(age) extrapolated from round_ts (falls back to the reported age)
   function kClock(T, rec, el, k, kind, ts, age) { T.clk.push({ rec, el, k, kind, ts, age }); }
   function ktTick(T, rt) {
     const L = T.clk;
-    for (let i = 0; i < L.length; i++) { const c = L[i]; kT(c.rec, c.el, c.k, c.kind === 'ago' ? ago(rt, c.ts) : dur(isNum(rt) && isNum(c.ts) ? (rt - c.ts) / 1000 : c.age)); }
+    for (let i = 0; i < L.length; i++) { const c = L[i]; kT(c.rec, c.el, c.k, c.kind === 'ago' ? ago(rt, c.ts) : c.kind === 'hold' ? mmss(isNum(rt) && isNum(c.ts) ? (rt - c.ts) / 1000 : NaN) : dur(isNum(rt) && isNum(c.ts) ? (rt - c.ts) / 1000 : c.age)); }
   }
   function tickClocks() { const rt = _last ? _last.round_ts : null; for (let i = 0; i < KT.length; i++) ktTick(KT[i], rt); }
   setInterval(() => { try { tickClocks(); } catch (e) { } }, 1000);
@@ -469,10 +592,27 @@
   const VDT =Object.assign(Object.create(null), { STRONG: 'weighted bloc agrees', MILD: 'some of the bloc agrees', LONE: 'NIFTY alone', CONFLICTED: 'both sides pulling' });
   const vdTag = (v, tip) => v ? '<span class="vd ' + esc(v) + '" title="' + esc((VDT[S(v)] || '') + (tip ? ' · ' + tip : '')) + '">' + esc(v) + '</span>' : '';
 
-  const JR = ktable('jr-body', 'tr', '<td></td><td><span data-q="ex"></span></td><td class="b"></td><td></td><td class="r"></td><td class="r"></td><td class="r"></td><td class="r b"></td><td class="r b"></td><td></td><td></td>');
+  const JR = ktable('jr-body', 'tr', '<td></td><td><span data-q="ex"></span></td><td class="r"></td><td class="b"></td><td></td><td class="r"></td><td class="r"></td><td class="r"></td><td class="r b"></td><td class="r b"></td><td class="r"></td><td class="r"></td><td></td><td class="cxs"></td><td></td>');
+  // 2.2 the moment of entry (journal row .ctx) as small chips; `prev` = the trade before it (same side → "re-buy")
+  function ctxChips(r, prev) {
+    const c = r.ctx; if (!c || typeof c !== 'object') return '';
+    const out = [], tip = [], se = c.secs_since_exit;
+    const chip = (t, k) => out.push('<span class="cx' + (k ? ' ' + k : '') + '">' + esc(t) + '</span>');
+    if (c.after === 'profit' && (!isNum(se) || se <= 900)) { const same = !!prev && prev.direction === r.direction; chip((same ? 're-buy ' : prev ? 'flip ' : '') + (isNum(se) ? dur(se) + ' ' : '') + 'after profit', same ? 'warn' : ''); }
+    else if (c.after === 'stop' && (!isNum(se) || se <= 900)) chip((isNum(se) ? dur(se) + ' ' : '') + 'after stop', 'vio');
+    if (isNum(c.exch_lag_s) && c.exch_lag_s >= 2) chip('feed ' + Math.round(c.exch_lag_s) + 's late', c.exch_lag_s > 6 ? 'bad' : 'warn');
+    if (c.breached === true) chip('breached', 'blu');
+    if (isNum(c.move_30s) && c.move_30s <= -2) chip('moving away ' + sg(c.move_30s, 1), 'warn');
+    if (c.after === 'profit' || c.after === 'stop') tip.push((isNum(se) ? dur(se) + ' ' : '') + 'after a ' + (c.after === 'profit' ? 'profitable exit' : 'stop'));
+    if (isNum(c.move_30s) || isNum(c.move_120s)) tip.push('NIFTY toward the trade: ' + (isNum(c.move_30s) ? sg(c.move_30s, 1) + ' pts in 30s' : '') + (isNum(c.move_30s) && isNum(c.move_120s) ? ', ' : '') + (isNum(c.move_120s) ? sg(c.move_120s, 1) + ' pts in 2m' : ''));
+    if (isNum(c.exch_lag_s)) tip.push('feed ' + secs(Math.max(0, c.exch_lag_s)) + ' s behind the exchange');
+    tip.push(c.breached === true ? 'level already breached at entry' : 'entered on the approach');
+    return '<span class="cxw" title="' + esc('at entry — ' + tip.join(' · ')) + '">' + (out.length ? out.join('') : '<span class="cx off">clean</span>') + '</span>';
+  }
+  let _eqKey = null;
   function rJournal(s) {
-    const j = Array.isArray(s.journal) ? s.journal.filter(Boolean).reverse() : [], ts = s.trades_summary || {};
-    if (!j.length) ktEmpty(JR, '<tr><td colspan="11" class="mut">no trades yet</td></tr>');
+    const j = Array.isArray(s.journal) ? s.journal.filter(Boolean).reverse() : [], ts = s.trades_summary || {}, rt = s.round_ts;
+    if (!j.length) ktEmpty(JR, '<tr><td colspan="15" class="mut">no trades yet</td></tr>');
     else {
       const recs = ktSync(JR, ktKeys(j, r => S(r.entry_ts) + '|' + S(r.strike) + S(r.right) + S(r.direction)));
       if (recs) for (let i = 0; i < j.length; i++) {
@@ -481,34 +621,47 @@
         kC(R, R.el, 'row', live ? 'live' : '');
         kT(R, td[0], '0', hms(r.entry_ts));
         kC(R, R.q.ex, 'exc', live ? 'blu' : ''); kT(R, R.q.ex, 'ex', live ? 'LIVE' : hms(r.exit_ts));
-        kC(R, td[2], '2c', (r.direction === 'UP' ? 'up' : 'dn') + ' b'); kT(R, td[2], '2', dirGlyph(r.direction) + ' ' + S(r.direction));
-        kT(R, td[3], '3', K(r.strike) + ' ' + S(r.right));
-        kT(R, td[4], '4', (isNum(r.qty) ? n0(r.qty) : '—') + (isNum(r.lots) ? ' · ' + r.lots + ' lot' + (r.lots === 1 ? '' : 's') : ''));
-        kT(R, td[5], '5', n(r.entry_price)); kT(R, td[6], '6', n(r.exit_price));
-        kC(R, td[7], '7c', 'r ' + sgnCls(r.pnl_pct) + ' b'); kT(R, td[7], '7', pct(r.pnl_pct, 1));
-        kC(R, td[8], '8c', 'r ' + sgnCls(r.pnl) + ' b'); kT(R, td[8], '8', inrS(r.pnl));
-        kC(R, td[9], '9c', er[1]); kA(R, td[9], '9t', 'title', S(r.exit_reason)); kH(R, td[9], '9', live ? '<span class="mut">open</span>' : esc(er[0]));
-        kH(R, td[10], '10', vdTag(r.verdict, tip) + (r.conflicted ? ' <span class="amb" title="conflicted">⚡</span>' : ''));
+        if (live && isNum(r.entry_ts)) kClock(JR, R, td[2], 'h', 'hold', r.entry_ts);
+        else kT(R, td[2], 'h', isNum(r.entry_ts) && isNum(r.exit_ts) ? mmss((r.exit_ts - r.entry_ts) / 1000) : '—');
+        kC(R, td[3], '3c', (r.direction === 'UP' ? 'up' : r.direction === 'DOWN' ? 'dn' : '') + ' b'); kT(R, td[3], '3', dirGlyph(r.direction) + ' ' + S(r.direction));
+        kT(R, td[4], '4', K(r.strike) + ' ' + S(r.right));
+        kT(R, td[5], '5', (isNum(r.qty) ? n0(r.qty) : '—') + (isNum(r.lots) ? ' · ' + r.lots + 'L' : ''));
+        kT(R, td[6], '6', n(r.entry_price)); kT(R, td[7], '7', n(r.exit_price));
+        kC(R, td[8], '8c', 'r ' + sgnCls(r.pnl_pct) + ' b'); kT(R, td[8], '8', pct(r.pnl_pct, 1));
+        kC(R, td[9], '9c', 'r ' + sgnCls(r.pnl) + ' b'); kT(R, td[9], '9', inrS(r.pnl));
+        kC(R, td[10], '10c', 'r ' + (isNum(r.peak_pct) && r.peak_pct > 0 ? 'up' : 'mut')); kT(R, td[10], '10', pct(r.peak_pct, 1));
+        kC(R, td[11], '11c', 'r ' + (isNum(r.low_pct) && r.low_pct < 0 ? 'dn' : 'mut')); kT(R, td[11], '11', pct(r.low_pct, 1));
+        kC(R, td[12], '12c', er[1] === 'rs-be' ? (r.pnl > 0 ? 'rs-trail' : r.pnl < 0 ? 'rs-sl' : 'b') : er[1]); kA(R, td[12], '12t', 'title', S(r.exit_reason) || null); kH(R, td[12], '12', live ? '<span class="mut">open</span>' : esc(er[0]));
+        kH(R, td[13], '13', ctxChips(r, j[i + 1]));
+        kH(R, td[14], '14', vdTag(r.verdict, tip) + (r.conflicted && r.verdict !== 'CONFLICTED' ? ' <span class="amb" title="conflicted">⚡</span>' : ''));
       }
+      ktTick(JR, rt);
     }
-    const parts = [];
-    if (isNum(ts.closed) && ts.closed > 0) {
-      parts.push('closed ' + ts.closed);
-      if (isNum(ts.wins) || isNum(ts.losses)) parts.push('W/L ' + (ts.wins || 0) + '/' + (ts.losses || 0));
-      if (isNum(ts.win_rate_pct)) parts.push(n(ts.win_rate_pct, 0) + '% win');
-      if (isNum(ts.streak) && ts.streak !== 0) parts.push('streak ' + (ts.streak > 0 ? '+' : '') + ts.streak);
-      if (isNum(ts.avg_win) && ts.avg_win) parts.push('avg win ' + inr(ts.avg_win));
-      if (isNum(ts.avg_loss) && ts.avg_loss) parts.push('avg loss ' + inr(ts.avg_loss));
-      if (isNum(ts.realized_pnl)) parts.push('realized ' + inrS(ts.realized_pnl));
-    } else parts.push(isNum(ts.trades_today) && ts.trades_today > 0 ? 'open trade · nothing closed yet' : 'no closed trades');
-    txt('jr-summary', parts.join(' · '));
+    // day summary (numbers from trades_summary; every cell is change-gated)
+    const nOpen = j.reduce((a, r) => a + (r.status === 'OPEN' ? 1 : 0), 0), hasC = isNum(ts.closed) && ts.closed > 0;
+    txt('jr-n', j.length ? j.length + ' trade' + (j.length === 1 ? '' : 's') + (nOpen ? ' · ' + nOpen + ' open' : '') : '');
+    txt('jr-real', isNum(ts.realized_pnl) ? inrS(ts.realized_pnl) : '—'); cls('jr-real', 'v num ' + sgnCls(ts.realized_pnl));
+    txt('jr-closed', isNum(ts.closed) ? String(ts.closed) : '—');
+    txt('jr-wl', hasC && (isNum(ts.wins) || isNum(ts.losses)) ? (ts.wins || 0) + ' / ' + (ts.losses || 0) : '—');
+    txt('jr-wr', hasC && isNum(ts.win_rate_pct) ? n(ts.win_rate_pct, 0) + '%' : '—');
+    txt('jr-streak', hasC && isNum(ts.streak) && ts.streak !== 0 ? (ts.streak > 0 ? ts.streak + ' win' + (ts.streak === 1 ? '' : 's') : -ts.streak + ' loss' + (ts.streak === -1 ? '' : 'es')) : '—'); cls('jr-streak', 'v num ' + (hasC ? sgnCls(ts.streak) : ''));
+    txt('jr-avgw', hasC && isNum(ts.avg_win) && ts.avg_win ? inr(ts.avg_win) : '—'); txt('jr-avgl', hasC && isNum(ts.avg_loss) && ts.avg_loss ? inr(ts.avg_loss) : '—');
+    // equity sparkline: cumulative realized P&L per closed trade; rebuilt ONLY when the closed-trade set changes
     const closed = Array.isArray(s.journal) ? s.journal.filter(r => r && r.status === 'CLOSED' && isNum(r.pnl)) : [];
-    if (closed.length < 1) { html('jr-spark', ''); return; }
-    const W = 220, H = 28, pad = 2; let cum = 0; const pts = [0]; closed.forEach(r => { cum += r.pnl; pts.push(cum); });
-    const lo = Math.min(0, ...pts), hi = Math.max(0, ...pts), rng = (hi - lo) || 1;
+    const ek = closed.length + '|' + (closed.length ? S(closed[closed.length - 1].exit_ts) + '|' + S(closed[closed.length - 1].pnl) : '');
+    if (ek === _eqKey) return;
+    _eqKey = ek;
+    const W = 260, H = 40, pad = 4;
+    if (closed.length < 1) { html('jr-spark', '<line class="z" x1="0" x2="' + W + '" y1="' + (H / 2) + '" y2="' + (H / 2) + '"/>'); return; }
+    let cum = 0; const pts = [0]; closed.forEach(r => { cum += r.pnl; pts.push(cum); });
+    const lo = Math.min.apply(null, pts), hi = Math.max.apply(null, pts), rng = (hi - lo) || 1;
     const X = i => pad + (i / (pts.length - 1)) * (W - 2 * pad), Y = v => H - pad - ((v - lo) / rng) * (H - 2 * pad);
-    const zy = Y(0).toFixed(1);
-    html('jr-spark', '<title>cumulative realized P&amp;L ' + esc(inrS(cum)) + '</title><line class="z" x1="0" x2="' + W + '" y1="' + zy + '" y2="' + zy + '"/><polyline class="l ' + sgnCls(cum) + '" points="' + pts.map((v, i) => X(i).toFixed(1) + ',' + Y(v).toFixed(1)).join(' ') + '"/>');
+    const zy = Y(0).toFixed(1), line = pts.map((v, i) => X(i).toFixed(1) + ',' + Y(v).toFixed(1)).join(' ');
+    let h = '<title>cumulative realized P&amp;L ' + esc(inrS(cum)) + ' over ' + closed.length + ' closed trade' + (closed.length === 1 ? '' : 's') + '</title>'
+      + '<polygon class="a ' + sgnCls(cum) + '" points="' + X(0).toFixed(1) + ',' + zy + ' ' + line + ' ' + X(pts.length - 1).toFixed(1) + ',' + zy + '"/>'
+      + '<line class="z" x1="0" x2="' + W + '" y1="' + zy + '" y2="' + zy + '"/><polyline class="l ' + sgnCls(cum) + '" points="' + line + '"/>';
+    if (closed.length <= 40) for (let i = 0; i < closed.length; i++) h += '<circle class="d ' + sgnCls(closed[i].pnl) + '" cx="' + X(i + 1).toFixed(1) + '" cy="' + Y(pts[i + 1]).toFixed(1) + '" r="1.9"/>';
+    html('jr-spark', h);
   }
 
   const BB = ktable('burst-body', 'tr', '<td class="mut"></td><td class="b"></td><td class="r"></td><td><span class="st" data-q="st"></span><span class="age hid" data-q="ag"></span></td><td class="r"></td><td class="r"></td><td><span class="heat" data-q="ht"><i data-q="hi"></i></span><span data-q="hv"></span><span data-q="hd"></span></td><td class="r mut"></td>');
@@ -664,7 +817,7 @@
     if (it !== _inTrade) { try { document.body.classList.toggle('in-trade', it); _inTrade = it; } catch (e) { } }
     // HOT (every coalesced round): the glance-critical sections only — header chips, SCREAM, WHY-NO-TRADE,
     // band hero, scream panel, position, lean. All writes are change-gated; no table is touched.
-    safe(rHeader, s); safe(rScream, s); safe(rWhyNoTrade, s); safe(rHero, s); safe(rScreamPanel, s); safe(rPosition, s, !!heavy); safe(rLean, s);
+    safe(rHeader, s); safe(rScream, s); safe(rWhyNoTrade, s); safe(rGuards, s); safe(rHero, s); safe(rScreamPanel, s); safe(rPosition, s, !!heavy); safe(rLean, s);
     // HEAVY (≤1 Hz, when a FULL frame arrived): keyed tables / lists — rows persist, only changed cells are written.
     if (heavy) { safe(rJournal, s); safe(rBurst, s); safe(rBreach, s); safe(rEvents, s); safe(rChain, s); safe(rUniverse, s); safe(rLevelHistory, s); }
   }

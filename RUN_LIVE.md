@@ -112,6 +112,24 @@ NIFTY band-hero panel (spot marker vs pins) · the scream · NIFTY lean (real si
   by Chrome to one paint a second and the beacons say `hidden:true`; on reveal the page repaints at once.
 - 2.1.1: the first start of a day downloads the broker's 30 MB security master into `tapes/_cache` (minutes when
   ICICI is slow); every restart the same day uses the cache and reaches the first round in seconds.
+- 2.2 (9 Nov tape): **the feed pill in the header ("feed 1.2 s late") is the number to watch.** It is how far
+  the NIFTY tick stream is behind the exchange clock. Green under 2 s, amber 2-6 s, red above. Above
+  `feed.max_exch_lag_secs` (6 s over the day's best reading) the engine PAUSES NEW ENTRIES, rings the feed
+  alarm once and shows a red banner; open positions are still managed. It re-opens by itself below 3 s.
+  On 9 Nov the stream ran 25-50 s late for two hours while other jobs on the laptop had the CPU; the socket
+  reader now takes one large read per wake-up (`feed.ws_buffered_reader`) and the engine runs at
+  above-normal priority (`runtime.process_priority`). If the pill still goes amber: stop batch jobs / replays
+  of the other engines during market hours.
+- 2.2: **the window can be closed as soon as "tapes closed" is printed.** The day's part files are merged by a
+  background process (`logs/tape_merge.log`). If the laptop is shut down before it finishes, the next start
+  finds the parts and merges them (`python -m vajra.tape_merge tapes/<date>` does it by hand).
+- 2.2: WHY-NO-TRADE can now say **WAIT**: "NIFTY not moving toward the level yet" (momentum guard) or
+  "re-buy needs NIFTY beyond 24,950" (after a profitable exit the same side is bought again only when NIFTY
+  passes the previous trade's best price). These are waits, not skips: the entry fires when the condition
+  clears. The guards line under the strip lists what is switched on; `entry.*` in vajra_config.yaml.
+- 2.2 evening review: `python tools/trade_review.py <date>` prints every trade with how it was entered and
+  the day grouped by entry type; `python tools/lab.py run <name> --set key=value` replays every recorded day
+  through the real engine with one setting changed (`python tools/lab.py compare base <name>`).
 - A stock code won't resolve → runtime `get_names()` then the `breeze.isec_override` map; a fallback is
   logged (only that stock's bloc-bias degrades — NIFTY execution is unaffected).
 - Verifiable pre-market: SDK installed, credentials present, live path imports, prev-close seed builds a

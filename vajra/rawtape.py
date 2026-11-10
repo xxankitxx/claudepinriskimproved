@@ -147,7 +147,7 @@ class RawTickRecorder:
             finally:
                 self._q.task_done()
 
-    def close(self) -> None:
+    def close(self, merge: bool = True) -> None:
         if not self.enabled or self._closed:
             return
         self._closed = True
@@ -167,6 +167,8 @@ class RawTickRecorder:
                 pass
             self._writer = None
             self._release_part()
+        if not merge:
+            return
         try:
             merge_parts(self.partition, NAME, SCHEMA)
         except Exception:

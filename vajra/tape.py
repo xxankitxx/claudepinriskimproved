@@ -18,6 +18,7 @@ Layout:  <root>/<YYYY-MM-DD>/<tape_name>.parquet  (+ .jsonl sidecar for the smal
 from __future__ import annotations
 
 import json
+import os
 import queue
 import threading
 import time
@@ -65,6 +66,42 @@ _MERGE_LOCKS: dict = {}
 _MERGE_LOCKS_GUARD = threading.Lock()
 
 
+# 2.2: two small files in a day folder keep a detached merge (vajra.tape_merge) and an engine apart.
+LIVE_NAME = ".live"            # a TapeWriter has this folder open (refreshed while it runs)
+LOCK_NAME = ".merge.lock"      # one process is merging this folder (holds its pid)
+LIVE_FRESH_SECS = 300          # a marker older than this belongs to an engine that died
+LIVE_TOUCH_SECS = 30
+STALE_LOCK_SECS = 2700         # a merge refreshes its lock after every tape; older = it died
+
+
+def _age_secs(path: Path):
+    try:
+        return time.time() - path.stat().st_mtime
+    except OSError:
+        return None
+
+
+def live_marker_fresh(partition: Path) -> bool:
+    """True while an engine is (or was, within LIVE_FRESH_SECS) writing parts in ``partition``."""
+    age = _age_secs(Path(partition) / LIVE_NAME)
+    return age is not None and age < LIVE_FRESH_SECS
+
+
+def merge_lock_held(partition: Path) -> bool:
+    age = _age_secs(Path(partition) / LOCK_NAME)
+    return age is not None and age < STALE_LOCK_SECS
+
+
+def _foreign_merge(partition: Path) -> bool:
+    """Another PROCESS is merging this folder right now (its fresh lock holds a pid that is not ours)."""
+    if not merge_lock_held(partition):
+        return False
+    try:
+        return (Path(partition) / LOCK_NAME).read_text().strip() != str(os.getpid())
+    except OSError:
+        return True
+
+
 def _merge_lock(partition: Path, name: str) -> threading.Lock:
     key = (str(Path(partition).resolve()), name)
     with _MERGE_LOCKS_GUARD:
@@ -82,6 +119,8 @@ def merge_parts(partition: Path, name: str, schema: pa.Schema | None = None,
     ``parts`` restricts the merge to an explicit list (the startup repair snapshots the leftover parts
     so it never swallows the new session's files). Returns the merged path, or None if nothing to do."""
     partition = Path(partition)
+    if _foreign_merge(partition):                       # 2.2: a detached merge owns these parts -- merging
+        return None                                     # them here too would write every row twice
     with _merge_lock(partition, name):
         cands = list(parts) if parts is not None else part_paths(partition, name)
         cands = [p for p in cands if p.exists() and str(p.resolve()) not in OPEN_PARTS]
@@ -278,6 +317,21 @@ class TapeWriter:
         self._recovery_thread: threading.Thread | None = None
         snapshot = {name: part_paths(self.partition, name) for name in list(S.PARQUET_TAPES) + ["raw_ticks"]}
         snapshot = {n: ps for n, ps in snapshot.items() if ps}
+        # 2.2: say "an engine is writing here" BEFORE the first part of this session exists, so a
+        # detached merge (vajra.tape_merge) never picks up a file we still have open. If such a merge
+        # is already working on the earlier session's parts, they are its job, not ours.
+        self._live_path = self.partition / LIVE_NAME
+        self._live_touched = 0.0
+        self._live_stop = threading.Event()
+        self._touch_live()
+
+        def _keep_live():                              # its own timer: before 09:20 no round runs, but the
+            while not self._live_stop.wait(LIVE_TOUCH_SECS):     # raw tick recorder already writes parts here
+                self._touch_live(force=True)
+        threading.Thread(target=_keep_live, name="vajra-tape-live", daemon=True).start()
+        self.merge_in_progress = bool(snapshot) and _foreign_merge(self.partition)
+        if self.merge_in_progress:
+            snapshot = {}
         self.recovering = sorted(snapshot)
         if snapshot:
             def _recover():
@@ -502,6 +556,27 @@ class TapeWriter:
         except OSError as e:
             self._disk_error(e)
 
+    def release_live(self) -> None:
+        """Every part in the folder is closed: drop the live marker so a merge may start."""
+        self._live_stop.set()
+        try:
+            self._live_path.unlink()
+        except OSError:
+            pass
+
+    def _touch_live(self, force: bool = False) -> None:
+        now = time.monotonic()
+        if not force and self._live_touched and now - self._live_touched < LIVE_TOUCH_SECS:
+            return
+        if self._live_stop.is_set():
+            return
+        self._live_touched = now
+        try:
+            with open(self._live_path, "w") as fh:
+                fh.write(str(os.getpid()))
+        except OSError:
+            pass
+
     def end_round(self) -> None:
         """Flush the jsonl sidecars once per engine round (durability within one round). Buffered
         parquet rows older than ~rotate_secs/4 are handed to the writer too, so a quiet tape (few
@@ -514,6 +589,8 @@ class TapeWriter:
                 except Exception:
                     pass
         self._dirty.clear()
+        if not self._closed:
+            self._touch_live()
         now = time.monotonic()
         self._last_jflush = now
         age_lim = max(1.0, self.rotate_secs / 4.0)
@@ -576,9 +653,11 @@ class TapeWriter:
                 break
             time.sleep(0.01)
 
-    def close(self, timeout: float = 120.0) -> None:
+    def close(self, timeout: float = 120.0, merge: bool = True) -> None:
         """Flush, close every part, merge the parts into the canonical parquet files. Every step is
-        isolated: a failure in one tape (full disk) must not leave the others unclosed."""
+        isolated: a failure in one tape (full disk) must not leave the others unclosed.
+        ``merge=False`` (2.2, the live engine) leaves the closed parts for ``vajra.tape_merge``, which
+        the caller starts detached -- the merge takes minutes and must not hold the window open."""
         if self._closed:
             return
         self._closed = True                            # late callers (beacons) are refused, not crashed
@@ -606,8 +685,11 @@ class TapeWriter:
             except Exception:
                 pass
         rt = self._recovery_thread
-        if rt is not None and rt.is_alive():
+        if rt is not None and rt.is_alive():            # (a same-day restart's repair; normally long done)
             rt.join(timeout=min(timeout, 60.0))
+        if not merge:                                   # the caller still has the raw-tick part open in this
+            return                                      # folder: it calls release_live() when that is shut
+        self.release_live()
         # 2.1.1: the six merges run side by side (Arrow releases the GIL); one read per part.
         from concurrent.futures import ThreadPoolExecutor
 

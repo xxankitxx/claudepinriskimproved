@@ -23,24 +23,32 @@
   </div>
 
   <div class="chips" id="hdr-chips">
-    <span class="chip" id="ch-trades" title="trades today">trades —</span>
-    <span class="chip" id="ch-expiry" title="expiry · basis mode">expiry —</span>
-    <span class="chip" id="ch-regime" title="regime · trading days to expiry (T-n) · band method (mtm = mark-to-market pain level, legacy = 1.x)">—</span>
-    <span class="chip" id="ch-routing" title="routing mode">routing —</span>
     <span class="chip" id="ch-feed" title="NIFTY feed health">FEED —</span>
     <span class="chip hid" id="ch-ws" title="broker socket">WS —</span>
     <span class="chip hid" id="ch-power" title="machine power">POWER —</span>
+    <span class="chip" id="ch-trades" title="trades today">trades —</span>
+    <span class="chip" id="ch-regime" title="regime · trading days to expiry (T-n) · band method (mtm = mark-to-market pain level, legacy = 1.x)">—</span>
+    <span class="chip" id="ch-expiry" title="expiry · basis mode">expiry —</span>
+    <span class="chip" id="ch-routing" title="routing mode">routing —</span>
   </div>
 
   <div class="hdr-right">
     <button type="button" id="sndbtn" class="pill" aria-pressed="true">🔔 sound</button>
-    <span id="lagpill" class="pill">live —</span>
+    <span id="exlagpill" class="pill xl-na" title="how far the NIFTY tick stream is behind the exchange clock">feed —</span>
+    <span id="lagpill" class="pill" title="engine → this browser delivery delay and paint time (NOT the exchange feed delay: that is the 'feed … late' pill)">live —</span>
     <div class="clock">
       <span class="clock-time num" id="clock">--:--:--</span>
       <span class="clock-sub" id="clock-sub" title="engine round time, IST (machine clock) · countdown to regime session_close">close in —</span>
     </div>
   </div>
 </header>
+
+<!-- ============ ENTRIES PAUSED: late NIFTY feed (2.2, feed_lag.closed) ============ -->
+<div id="lagbanner" class="lagbanner hid" role="alert">
+  <span class="lb-ic" aria-hidden="true">⏸</span>
+  <span class="lb-text" id="lagbanner-text">ENTRIES PAUSED: NIFTY feed is behind the exchange</span>
+  <span class="lb-sub num" id="lagbanner-sub"></span>
+</div>
 
 <!-- ============ THE SCREAM (alert banner) ============ -->
 <section id="scream" class="scream st-preopen" role="status">
@@ -64,6 +72,11 @@
     <div class="cell optional"><span class="k" title="regime flatten_before">square-off</span><span class="v num" id="wnt-squareoff">—</span></div>
   </div>
 </section>
+
+<!-- ============ ENTRY GUARDS (2.2, quiet) ============ -->
+<div id="guards" class="guards hid" title="entry guards that are switched on (each one delays an entry; none of them touches an open position)">
+  <span class="g-k">GUARDS</span><span class="g-list" id="guards-list"></span>
+</div>
 
 <main class="grid" id="main">
 
@@ -170,6 +183,24 @@
           <span class="arr">→</span>
           <span class="k">now</span><span id="pos-now">—</span>
         </div>
+        <!-- stop ladder (2.2): one premium scale, hard stop → entry → +floor → arm → peak; markers move by transform only -->
+        <div class="ladder hid" id="ladder" role="img" aria-label="stop ladder">
+          <div class="lad-track">
+            <div class="lad-seg risk" id="lad-risk"></div>
+            <div class="lad-seg lock" id="lad-lock"></div>
+            <div class="lad-seg gap" id="lad-gap"></div>
+            <div class="lad-m sl" id="lad-sl"><span class="lad-l num" id="lad-sl-l"></span></div>
+            <div class="lad-m entry" id="lad-entry"><span class="lad-l num" id="lad-entry-l"></span></div>
+            <div class="lad-m minp" id="lad-minp"><span class="lad-l num" id="lad-minp-l"></span></div>
+            <div class="lad-m arm" id="lad-arm"><span class="lad-l num" id="lad-arm-l"></span></div>
+            <div class="lad-m bearm hid" id="lad-bearm"><span class="lad-l num" id="lad-bearm-l"></span></div>
+            <div class="lad-m belock hid" id="lad-belock"><span class="lad-l num" id="lad-belock-l"></span></div>
+            <div class="lad-m floor hid" id="lad-floor"><span class="lad-l num" id="lad-floor-l"></span></div>
+            <div class="lad-m peak" id="lad-peak"></div>
+            <div class="lad-m now" id="lad-now"><span class="lad-l num" id="lad-now-l"></span></div>
+          </div>
+          <div class="lad-cap num"><span id="lad-cap-stop">—</span><span id="lad-cap-lock">—</span></div>
+        </div>
         <svg class="spark" id="pos-spark" viewBox="0 0 320 64" preserveAspectRatio="none" aria-hidden="true"></svg>
         <div class="pos-grid">
           <div class="cell"><span class="k" title="premium given back from the trade peak">given from peak</span><span class="v num" id="pos-given">—</span></div>
@@ -212,17 +243,30 @@
   <section class="panel wide" id="journal">
     <div class="panel-head">
       <h2>TRADE JOURNAL</h2>
-      <svg class="spark-cum" id="jr-spark" viewBox="0 0 220 28" preserveAspectRatio="none" aria-hidden="true"></svg>
-      <div class="summary num" id="jr-summary">no closed trades</div>
+      <span class="mut" id="jr-n"></span>
+    </div>
+    <div class="jr-day" id="jr-day">
+      <div class="jr-eq" title="equity curve: cumulative realized P&amp;L after each closed trade">
+        <span class="k">day equity</span>
+        <svg class="spark-cum" id="jr-spark" viewBox="0 0 260 40" preserveAspectRatio="none" aria-hidden="true"></svg>
+      </div>
+      <div class="cell"><span class="k">realized</span><span class="v num" id="jr-real">—</span></div>
+      <div class="cell"><span class="k">closed</span><span class="v num" id="jr-closed">—</span></div>
+      <div class="cell"><span class="k">won / lost</span><span class="v num" id="jr-wl">—</span></div>
+      <div class="cell"><span class="k">win rate</span><span class="v num" id="jr-wr">—</span></div>
+      <div class="cell"><span class="k">streak</span><span class="v num" id="jr-streak">—</span></div>
+      <div class="cell"><span class="k">avg win</span><span class="v num" id="jr-avgw">—</span></div>
+      <div class="cell"><span class="k">avg loss</span><span class="v num" id="jr-avgl">—</span></div>
     </div>
     <div class="tbl-wrap">
       <table class="tbl" id="jr-tbl">
         <thead><tr>
-          <th>entry</th><th>exit</th><th>dir</th><th>strike</th><th class="r" title="lots · contracts">size</th>
+          <th>entry</th><th>exit</th><th class="r" title="time in the trade (mm:ss)">hold</th><th>dir</th><th>strike</th><th class="r" title="contracts · lots (L)">size</th>
           <th class="r">entry ₹</th><th class="r">exit ₹</th><th class="r">P&amp;L %</th><th class="r">P&amp;L ₹</th>
-          <th>exit reason</th><th>confluence</th>
+          <th class="r" title="best the option premium reached during the trade, vs entry">peak %</th><th class="r" title="worst the option premium reached during the trade, vs entry">low %</th>
+          <th>exit reason</th><th title="the moment of entry: re-buy / after a stop / late feed / already breached / NIFTY moving away">context</th><th>confluence</th>
         </tr></thead>
-        <tbody id="jr-body"><tr><td colspan="11" class="mut">no trades yet</td></tr></tbody>
+        <tbody id="jr-body"><tr><td colspan="15" class="mut">no trades yet</td></tr></tbody>
       </table>
     </div>
   </section>

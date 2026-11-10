@@ -25,6 +25,7 @@ from .timeutil import hhmm_reached
 # exit reason codes
 SL_HIT = "SL_HIT"                      # hard stop (premium fell hard_sl_pct below entry)
 TRAIL_SL = "TRAIL_SL"                  # trailing stop (books >= min profit, then the max)
+BE_STOP = "BE_STOP"                    # 2.2 protective stop (optional): was +arm%, came back to +lock%
 EXPIRY_FLATTEN = "EXPIRY_FLATTEN"
 END_OF_SESSION = "END_OF_SESSION"
 
@@ -43,8 +44,10 @@ class Position:
     qty_remaining: int
     cost: float                    # capital deployed at entry (qty * entry_fill)
     peak_premium: float = 0.0      # high-water mark of the option premium
+    trough_premium: float = 0.0    # low-water mark (2.2: the journal shows how far a trade went each way)
     trail_floor: float = 0.0       # current trailing-stop floor (0 = not yet armed)
     trail_armed: bool = False
+    be_armed: bool = False         # 2.2: the protective stop is live (peak reached breakeven_arm_pct)
     last_premium: float = 0.0      # most recent option premium (for live unrealized P&L)
     realized_pnl: float = 0.0
     order_ids: list[str] = field(default_factory=list)
@@ -134,6 +137,12 @@ class Executor:
         self.trail_extend_mid_pct = float(ex.get("trail_extend_mid_pct", 0.20))
         self.trail_extend_tight_pct = float(ex.get("trail_extend_tight_pct", 0.35))
         self.hard_sl_pct = float(ex.get("hard_sl_pct", 0.12))
+        # 2.2 protective stop (OFF unless breakeven_arm_pct > 0; the operator rule was "no breakeven").
+        # 15-day tape study: 41% of the stopped trades had been +5% or better first. Once the peak
+        # reaches entry*(1+arm) and the trail is not armed yet, the stop moves from -hard_sl to
+        # entry*(1+lock). The trail (+10% arm, +7% floor) is unchanged and takes over when it arms.
+        self.breakeven_arm_pct = float(ex.get("breakeven_arm_pct", 0) or 0)
+        self.breakeven_lock_pct = float(ex.get("breakeven_lock_pct", 0.01) or 0)
         # (no upper premium ceiling and no upper lot cap — operator rule: deploy ALL remaining
         # capital on EVERY trade regardless of how rich the option is.)
         # Minimum entry premium (operator rule): skip an entry whose option is too THIN.
@@ -230,7 +239,7 @@ class Executor:
             direction=direction, right=right, strike=strike, entry_ts=ts_ms, entry_fill=fill,
             entry_spot=snapshot.spot, lots=lots, lot_size=self.lot_size, qty_total=qty,
             qty_remaining=qty, cost=qty * fill,
-            peak_premium=fill, last_premium=fill, order_ids=[order_id])
+            peak_premium=fill, trough_premium=fill, last_premium=fill, order_ids=[order_id])
         return [_row(ts_ms, "ENTRY", strike, right, qty, intended, fill, slip, order_id,
                      self.live_orders, "", 0.0)]
 
@@ -253,6 +262,7 @@ class Executor:
             return [self._close(ts_ms, snapshot, EXPIRY_FLATTEN)]
         prem = q.ltp
         pos.peak_premium = max(pos.peak_premium, prem)
+        pos.trough_premium = prem if pos.trough_premium <= 0 else min(pos.trough_premium, prem)
         pos.last_premium = prem
 
         # 2) Trailing stop (PROFIT exit) — arms once the peak reaches entry*(1+activate) (+10%,
@@ -280,7 +290,12 @@ class Executor:
                 return [self._close(ts_ms, snapshot, TRAIL_SL)]
             return []                              # in profit, trailing — HOLD to book the max
 
-        # --- Below +10% (trail not armed): ONLY the hard stop. No breakeven (operator rule). ---
+        # --- Below +10% (trail not armed): the hard stop, and the optional 2.2 protective stop. ---
+        if self.breakeven_arm_pct > 0:
+            if pos.peak_premium >= pos.entry_fill * (1.0 + self.breakeven_arm_pct) - 1e-9:
+                pos.be_armed = True
+            if pos.be_armed and prem <= pos.entry_fill * (1.0 + self.breakeven_lock_pct) + 1e-9:
+                return [self._close(ts_ms, snapshot, BE_STOP)]
         if prem <= pos.entry_fill * (1.0 - self.hard_sl_pct) + 1e-9:
             return [self._close(ts_ms, snapshot, SL_HIT)]
         return []
@@ -321,5 +336,5 @@ class Executor:
         return self.position is not None and self.position.open
 
 
-__all__ = ["Executor", "OrderWrapper", "Position", "SL_HIT", "TRAIL_SL",
+__all__ = ["Executor", "OrderWrapper", "Position", "SL_HIT", "TRAIL_SL", "BE_STOP",
            "EXPIRY_FLATTEN", "END_OF_SESSION"]

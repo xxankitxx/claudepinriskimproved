@@ -217,6 +217,8 @@ def test_sl_hit_starts_exactly_11min_cooldown(monkeypatch):
 
 def test_profit_exit_starts_exactly_15s_cooldown(monkeypatch):
     o, w = _orch(monkeypatch)
+    o._rebuy_guard = False                 # the 15-s pause itself (2.2's re-buy guard is tested just below)
+    o._retreat_secs = 0                    # ...and without the momentum guard (NIFTY is flat in this fixture)
     o.process_round(_ms(10, 0), {"NIFTY": _chain(22955)})
     pos = o.executor.position
     k = (pos.strike, pos.right)
@@ -229,6 +231,26 @@ def test_profit_exit_starts_exactly_15s_cooldown(monkeypatch):
     assert not o.executor.position_active
     o.process_round(t_x + 15_000, {"NIFTY": _chain(22955)})
     assert o.executor.position_active
+
+
+def test_rebuy_after_a_profit_waits_for_a_new_extreme_22(monkeypatch):
+    """2.2 (15-day tape: 42 re-buys within 20 s of a trail profit, 43% won, -2.47 lakh): after the 15-s
+    pause the SAME side is bought again only once NIFTY trades beyond the best spot of that trade."""
+    o, w = _orch(monkeypatch)
+    assert o._rebuy_guard and o._retreat_secs == 30        # shipped defaults
+    o._retreat_secs = 0                                    # isolate the re-buy guard
+    o.process_round(_ms(10, 0), {"NIFTY": _chain(22955)})
+    pos = o.executor.position
+    k = (pos.strike, pos.right)
+    o.process_round(_ms(10, 0, 1), {"NIFTY": _with(_chain(22955.5), k, round(pos.entry_fill * 1.25, 2))})
+    t_x = _ms(10, 0, 2)
+    o.process_round(t_x, {"NIFTY": _with(_chain(22956), k, round(pos.entry_fill * 1.16, 2))})
+    assert _orders(w, "EXIT")[-1]["pnl_realized"] > 0
+    o.process_round(t_x + 15_000, {"NIFTY": _chain(22955)})          # pause over, but no new high (best 22956)
+    assert not o.executor.position_active and o._entry_gate == "REBUY_WAIT"
+    o.process_round(t_x + 16_000, {"NIFTY": _chain(22957)})          # NIFTY passes the previous best
+    assert o.executor.position_active
+    assert o._rebuy is None                                          # spent: it must not outlive this entry
 
 
 # ------------------------------------------------------------- 6. no cap / no loss stop / no confluence veto

@@ -52,6 +52,10 @@ def pct(xs, q):
 
 
 def main(argv):
+    try:                                    # 2.2: the report holds non-ASCII signs; a cp1252 console / pipe crashed on print
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
     if not argv:
         print(__doc__)
         return 2
@@ -106,6 +110,28 @@ def main(argv):
                 P(f"    - {a} → {b} ({why}, {secs} s)")
         g = Counter(r.get("gate") for r in rounds)
         P(f"- entry gate by round: {dict(g.most_common())}")
+        # 2.2: how late the NIFTY stream was (ws.exch_lag_s on every round) and the socket drops
+        lags = [(r["ts"], (r.get("ws") or {}).get("exch_lag_s")) for r in rounds]
+        lv = [x for _, x in lags if isinstance(x, (int, float))]
+        if lv:
+            base = min(lv)
+            late2 = sum(1 for x in lv if x - base > 2) / len(lv)
+            late6 = sum(1 for x in lv if x - base > 6) / len(lv)
+            P(f"- **NIFTY feed lateness** (receive − exchange clock, over the day's best {base:.1f} s): median "
+              f"{pct([x - base for x in lv], .5):.1f} s, p99 {pct([x - base for x in lv], .99):.1f} s, max {max(lv) - base:.1f} s; "
+              f"rounds more than 2 s late: {late2:.1%}, more than 6 s late (entries paused): {late6:.1%}")
+            worst = {}
+            for t, x in lags:
+                if isinstance(x, (int, float)) and x - base > 6:
+                    k = hms(t)[:4] + "0"
+                    worst[k] = max(worst.get(k, 0.0), x - base)
+            if worst:
+                P("    - ten-minute windows with the feed more than 6 s late: "
+                  + ", ".join(f"{k} (max {v:.0f} s)" for k, v in sorted(worst.items())))
+        drops = [(r.get("ws") or {}).get("drops") for r in rounds]
+        drops = [d for d in drops if isinstance(d, int)]
+        if drops:
+            P(f"- socket drops during the session: {max(drops)}")
     else:
         P("- round_tape.jsonl missing (engine older than 2.0.1 or never reached 09:20)")
     P()

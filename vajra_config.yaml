@@ -94,6 +94,25 @@ entry:
   # NOTE: there is NO opposite-side veto. We enter on EVERY approach (operator rule);
   # the opposite-side pull is only SCREAMED + LOGGED via the confluence verdict.
   strong_pull: 0.35               # weighted same-side pull at/above which the confluence reads STRONG (§5.6, display)
+  # ---- 2.2 entry-quality guards (15-day tape study, CHANGELOG 2.2) -------------------------------
+  # Each guard is a WAIT, never a skip: the same approach fires as soon as the condition clears.
+  # Lab, 15 days, two replays: 2.1 rules +1.4..1.8% per trade; both guards +2.0..3.4%; guards + the
+  # protective stop +3.0..3.7% (CHANGELOG 2.2 has the table). To return to 2.1: rebuy_guard "off", momentum_guard_secs 0.
+  # Test any change on every recorded day first:  python tools/lab.py run <name> --set entry.<key>=<value>
+  #
+  # Re-buy guard. 42 entries were taken within 20 s of a trail-profit exit: 43% won, -2.47 lakh (every
+  # other entry type: 57-59% won, +3.7 lakh). After a profitable exit the SAME side is bought again only
+  # once NIFTY trades beyond the best price of that trade, or NIFTY leaves the entry zone and comes back
+  # (a new approach), or rebuy_guard_expiry_secs pass. The other side is never held back.
+  rebuy_guard: "on"               # on | off   (2.2 default: on; "off" = the 2.1 behaviour)
+  rebuy_guard_expiry_secs: 600
+  rebuy_guard_margin_pts: 0       # how far beyond the previous best NIFTY must trade (0 = any new extreme)
+  # Momentum guard. Entries with NIFTY moving < 3 pts toward the level over the last 30 s: 62 trades,
+  # 47% won, -2.06 lakh; with >= 3 pts: 112 trades, 58% won, +3.80 lakh. No entry while the move toward
+  # the level over momentum_guard_secs is below momentum_min_pts (a negative value only blocks a retreat).
+  momentum_guard_secs: 30         # 0 = off = the 2.1 behaviour (2.2 default: 30)
+  momentum_min_pts: 3
+  max_breach_pts: 0               # 0 = off; N = no entry once NIFTY is more than N pts THROUGH the level
 
 # --- §5.4 Freshness / recalc (FIXED 20-min interval — operator rule) ---------
 # Pre-open: levels SEEDED from the prev-day close. First intraday recompute at calc_start
@@ -228,6 +247,12 @@ execution:
   trail_extend_mid_pct: 0.20      # tier boundaries (inert while all three give values are equal)
   trail_extend_tight_pct: 0.35
   hard_sl_pct: 0.12               # hard stop: exit if premium falls 12% below entry (only exit before the trail arms)
+  # 2.2 protective stop (OFF = the operator rule "no breakeven"). 41% of the trades that ended at the hard
+  # stop had been +5% or better first. With breakeven_arm_pct: 0.06 a trade that has been +6% is stopped at
+  # +breakeven_lock_pct instead of -12%, until the +10% trail takes over. Exit reason BE_STOP; it starts the
+  # short post-profit pause, never the 11-minute post-stop one. Lab evidence: CHANGELOG 2.2.
+  breakeven_arm_pct: 0.06         # 0 = off. OPERATOR 10 Nov 2026: switched ON (+6% arms, stop at +1%)
+  breakeven_lock_pct: 0.01
   # Minimum entry premium (operator rule): do NOT trade if the ATM option is too THIN.
   min_premium_nonexpiry: 45       # non-expiry day: skip the entry if premium < 45
   min_premium_expiry: 30          # expiry day: skip the entry if premium < 30
@@ -292,6 +317,8 @@ tape:
   # written as closed PART files, one per rotate_secs, merged into <tape>.parquet at a clean close
   # (or at the next start). A hard kill loses at most rotate_secs of rows.
   rotate_secs: 60
+  merge_at_close: detached        # 2.2: live sessions merge the day's parts in a background process
+                                  # (the window can be closed at once); "inline" = merge before exiting
   # jsonl sidecars: "small" = decision/order/signal only (default; the tick/level/basis sidecars were
   # ~9 GB/day), "all" = every parquet tape (2.0 behaviour), "none".
   sidecar_jsonl: small
@@ -315,6 +342,16 @@ feed:
   sdk_reconnect_grace_secs: 10    # let the SDK's own reconnect finish before the socket is rebuilt
   ws_keepalive_secs: 10           # 2.1.1: idempotent re-join every N s so the socket client's write loop never idles out (0 = off)
   quote_stale_resub_secs: 45      # 2.1.1: a near-the-money option quote older than this is re-subscribed (its stream died quietly)
+  # 2.2 (9 Nov tape: NIFTY 25-50 s behind the exchange for two hours, 93 socket drops while other jobs
+  # had the CPU). The socket is read in 64 KB chunks and threads hand the interpreter over every 0.5 ms.
+  ws_buffered_reader: "on"
+  switch_interval_ms: 0.5
+  max_exch_lag_secs: 6            # NO NEW ENTRY while NIFTY ticks arrive more than this late (0 = off);
+                                  # re-opens below half. Open positions are still managed.
+
+# --- 2.2 runtime -----------------------------------------------------------------------------
+runtime:
+  process_priority: above_normal  # live engine's Windows priority class: normal | above_normal | high
 
 # --- Server / dashboard (localhost; NOT 8765 — MYTHOS owns 8765) -------------
 server:

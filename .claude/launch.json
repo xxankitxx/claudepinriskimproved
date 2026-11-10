@@ -4,7 +4,7 @@
     {
       "name": "vajra-replay-paced",
       "runtimeExecutable": "C:\\Users\\Ankit Madhogaria\\AppData\\Local\\Programs\\Python\\Python313\\python.exe",
-      "runtimeArgs": ["-m", "vajra.app", "--mode", "replay", "--date", "2026-11-03", "--pace", "8", "--port", "8767"],
+      "runtimeArgs": ["-m", "vajra.app", "--mode", "replay", "--date", "2026-11-06", "--pace", "8", "--port", "8767"],
       "port": 8767
     }
   ]

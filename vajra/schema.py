@@ -51,6 +51,9 @@ class Reason:
     POST_STOP_COOLDOWN = "POST_STOP_COOLDOWN"   # no new trade for N s after a hard-stop (SL_HIT) loss
     POST_PROFIT_COOLDOWN = "POST_PROFIT_COOLDOWN"  # silent no-trade window after a profitable exit
     # 2.0 entry gates (the ordered "why no trade" reasons)
+    ENTRY_RETREATING = "ENTRY_RETREATING"       # 2.2: NIFTY is moving AWAY from the level -> wait
+    REBUY_WAIT = "REBUY_WAIT"                   # 2.2: after a profit, same-side re-buy waits for a new extreme
+    BREACH_TOO_DEEP = "BREACH_TOO_DEEP"         # 2.2: spot already far through the level (optional guard)
     BEFORE_TRADE_START = "BEFORE_TRADE_START"
     AFTER_LAST_ENTRY = "AFTER_LAST_ENTRY"
     NO_LEVELS = "NO_LEVELS"
@@ -247,6 +250,7 @@ EVENT_TYPES = (
     "CLIENT",                              # 2.0.1: dashboard beacon (what the browser painted / played)                            # 2.0.1: same-day restart rebuilt capital/position/cooldowns
     "REGIME",                              # session regime + band method (startup)
     "FEED_HEALTH",                         # NIFTY feed-sanity recovery (faults are FEED_GAP stage=feed_sanity)
+    "TRADE",                               # 2.2: one row per closed round trip (entry context, peak/low, exit)
 )
 
 
