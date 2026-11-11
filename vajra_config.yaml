@@ -348,6 +348,7 @@ feed:
   switch_interval_ms: 0.5
   max_exch_lag_secs: 6            # NO NEW ENTRY while NIFTY ticks arrive more than this late (0 = off);
                                   # re-opens below half. Open positions are still managed.
+  lag_alarm_secs: 10              # the feed alarm rings only if the pause lasts this long (short broker stalls are silent)
 
 # --- 2.2 runtime -----------------------------------------------------------------------------
 runtime:

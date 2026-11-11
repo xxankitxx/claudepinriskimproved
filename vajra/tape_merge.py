@@ -38,6 +38,11 @@ def has_parts(partition: Path) -> bool:
         return False
 
 
+def needs_work(partition: Path) -> bool:
+    """Parts to merge, or a closing session's sidecar manifest still to apply."""
+    return has_parts(partition) or (Path(partition) / ".sidecars.json").exists()
+
+
 def _lower_priority() -> None:
     try:
         if os.name == "nt":
@@ -55,7 +60,12 @@ def merge_partition(partition: Path) -> list[str]:
     from . import schema as S
     from .tape import merge_parts, part_paths
     partition = Path(partition)
-    if not partition.is_dir() or not has_parts(partition):
+    if not partition.is_dir():
+        return []
+    if not has_parts(partition):
+        if (partition / ".sidecars.json").exists() and not live_marker_fresh(partition):
+            from .tape import drop_manifest_sidecars          # a merge that finished before the manifest
+            return [f"dropped {n}.jsonl" for n in drop_manifest_sidecars(partition)]
         return []
     names = list(S.PARQUET_TAPES) + ["raw_ticks"]
     snapshot = {n: part_paths(partition, n) for n in names}       # BEFORE the marker check (see module doc)
@@ -86,6 +96,11 @@ def merge_partition(partition: Path) -> list[str]:
                 os.utime(lock, None)                               # still alive: keep the lock fresh
             except OSError:
                 pass
+        if not has_parts(partition):                               # every tape is whole: the closing session's
+            from .tape import drop_manifest_sidecars               # verified jsonl copies can go
+            dropped = drop_manifest_sidecars(partition)
+            if dropped:
+                done = done + [f"dropped {n}.jsonl" for n in dropped]
         return done
     finally:
         try:
@@ -98,7 +113,7 @@ def spawn(partitions, root: Path | None = None) -> bool:
     """Start the merge of ``partitions`` in a detached, low-priority process that outlives this one
     (and the console window). Returns False when nothing needed merging or the spawn failed -- the
     parts then simply wait for the next start."""
-    parts = [str(Path(p)) for p in partitions if has_parts(Path(p))]
+    parts = [str(Path(p)) for p in partitions if needs_work(Path(p))]
     if not parts:
         return False
     root = Path(root) if root is not None else Path(__file__).resolve().parents[1]
@@ -139,7 +154,7 @@ def stale_partitions(tape_root: Path, exclude: Path | None = None, look_back: in
     except OSError:
         return []
     ex = Path(exclude).resolve() if exclude is not None else None
-    return [d for d in days[-look_back:] if d.resolve() != ex and has_parts(d)]
+    return [d for d in days[-look_back:] if d.resolve() != ex and needs_work(d)]
 
 
 def main(argv=None) -> int:

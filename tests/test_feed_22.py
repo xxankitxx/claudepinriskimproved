@@ -133,6 +133,7 @@ def _gate_host(limit=6.0):
     from vajra.orchestrator import Orchestrator
     o = Orchestrator.__new__(Orchestrator)
     o._breeze, o._max_exch_lag, o._lag_closed, o._lag_floor = _Brz(), limit, False, None
+    o._lag_closed_ms, o._lag_alarmed, o._lag_alarm_ms = 0, False, 10_000
     o.sounds, o.events = _Sounds(), []
     o._emit_event = lambda et, p, ts_ms=None: o.events.append((et, p))
     return o
@@ -144,12 +145,26 @@ def test_lag_gate_closes_above_the_limit_and_reopens_below_half():
     o._breeze.tick_lag_s = 1.2
     assert o._lag_gate(2) is False
     o._breeze.tick_lag_s = 9.5
-    assert o._lag_gate(3) is True and o.sounds.rang == ["feed_alarm"]
+    assert o._lag_gate(3) is True and o.sounds.rang == []     # entries pause at once, the alarm waits
     assert o.events[-1][0] == "FEED_GAP" and o.events[-1][1]["stage"] == "exch_lag"
     o._breeze.tick_lag_s = 5.0                               # better, but not below half the limit
     assert o._lag_gate(4) is True and len(o.events) == 1     # one event per episode
+    assert o._lag_gate(10_003) is True and o.sounds.rang == ["feed_alarm"]   # still paused 10 s later
+    assert o._lag_gate(20_000) is True and o.sounds.rang == ["feed_alarm"]   # once per episode
     o._breeze.tick_lag_s = 2.0
-    assert o._lag_gate(5) is False and o.events[-1][1]["stage"] == "exch_lag_recovered"
+    assert o._lag_gate(20_250) is False and o.events[-1][1]["stage"] == "exch_lag_recovered"
+    assert o.events[-1][1]["paused_secs"] == 20.2
+
+
+def test_a_short_broker_stall_pauses_entries_without_an_alarm():
+    """11 Nov: 10:43 and 13:25 -- the broker sent nothing for 12-15 s, then a burst drained in ~7 s."""
+    o = _gate_host()
+    o._breeze.tick_lag_s = 1.7
+    o._lag_gate(0)
+    o._breeze.tick_lag_s = 11.7
+    assert o._lag_gate(1_000) is True
+    o._breeze.tick_lag_s = 1.9
+    assert o._lag_gate(8_000) is False and o.sounds.rang == []
 
 
 def test_lag_gate_ignores_a_laptop_clock_that_runs_fast():
@@ -296,3 +311,43 @@ def test_priority_is_really_raised_on_windows():
     finally:
         if before:
             power._set_priority_class(before)
+
+
+def test_detached_close_hands_the_verified_jsonl_sidecars_to_the_merge(tmp_path):
+    """11 Nov: decision_tape.jsonl (212 MB) stayed behind -- the drop ran only after an in-process merge."""
+    import json as _json
+    from vajra import tape_merge
+    from vajra.tape import TapeWriter, SIDECAR_MANIFEST
+    d = date(2026, 11, 11)
+    tw = TapeWriter(tmp_path, d, rotate_secs=0.05, flush_threshold=5)
+    tw.drop_verified_jsonl = True
+    for k in range(3):
+        for i in range(10):
+            tw.append("decision_tape", {"ts": 1000 + 10 * k + i, "instruments": [], "raw_bias": 0.0,
+                                        "bias_ewma": 0.0, "bias_threshold": 0.25, "routing_mode": "CONFIRM",
+                                        "divergence_flag": False, "reversal_freeze_flag": False,
+                                        "expiry_gate_flag": True, "decision": "HOLD", "reason_code": "NO_APPROACH",
+                                        "regime": "NON_EXPIRY", "feed_ok": True, "nearest_level_dist": 5.0})
+        tw.end_round(); tw.flush(); time.sleep(0.12)
+    part = tw.partition
+    assert (part / "decision_tape.jsonl").exists()
+    tw.close(merge=False)
+    tw.release_live()
+    assert _json.loads((part / SIDECAR_MANIFEST).read_text()) == {"decision_tape": 30}
+    done = tape_merge.merge_partition(part)
+    assert "decision_tape" in done and "dropped decision_tape.jsonl" in done
+    assert not (part / "decision_tape.jsonl").exists() and not (part / SIDECAR_MANIFEST).exists()
+
+
+def test_a_sidecar_whose_parquet_does_not_match_is_kept(tmp_path):
+    import json as _json
+    from vajra.tape import drop_manifest_sidecars, SIDECAR_MANIFEST
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+    part = tmp_path / "2026-11-11"
+    part.mkdir()
+    (part / "decision_tape.jsonl").write_text("{}\n" * 5)
+    pq.write_table(pa.table({"ts": [1, 2, 3]}), str(part / "decision_tape.parquet"))
+    (part / SIDECAR_MANIFEST).write_text(_json.dumps({"decision_tape": 5}))
+    assert drop_manifest_sidecars(part) == []
+    assert (part / "decision_tape.jsonl").exists() and not (part / SIDECAR_MANIFEST).exists()

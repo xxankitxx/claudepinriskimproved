@@ -42,6 +42,9 @@ function _onState(s, isFull){
   _wdLastOk=Date.now();
   if(s.server_ms) _lagMs=Date.now()-s.server_ms;
   if(s.round_ts!==_wdLastRts){ _wdLastRts=s.round_ts; _wdLastRtsChange=Date.now(); }
+  // 2.2: count RECEIVED rounds here (the beacon used to count only painted ones, so a hidden window --
+  // 97% of 11 Nov -- reported 0 rounds while it received and played everything)
+  if(s.round_ts && s.round_ts!==_cb.lastRecvRts){ _cb.recvRounds++; _cb.lastRecvRts=s.round_ts; }
   _lastMsgAt=Date.now(); if(isFull) _heavyDue=true;
   if(isFull) _full=s; else _full=Object.assign({}, _full, s);
   const _cl=(_full.regime||{}).closing||{}; const _chm=_hmOf(_cl.session_close); if(_chm) _closeHM=_chm;
@@ -115,7 +118,7 @@ function _startPoll(){                         // fallback: old behaviour, but g
   setTimeout(()=>{ if(!_es){ clearTimeout(_pollTimer); _pollTimer=null; _sseFails=0; _cb.sseReconnects++; _startSSE(); } }, 5000);  // try push again soon
 }
 // ---- 2.0.1 client beacon: what THIS browser painted and played, every 10 s -> client_tape.jsonl ----
-const _cb={paints:0, rounds:0, lastRts:null, sounds:[], sseReconnects:0, pollMode:0, maxLag:0, lagSum:0, lagN:0, boot:Date.now(),
+const _cb={paints:0, rounds:0, lastRts:null, recvRounds:0, lastRecvRts:null, sounds:[], sseReconnects:0, pollMode:0, maxLag:0, lagSum:0, lagN:0, boot:Date.now(),
            pubLagSum:0, pubLagN:0, pubLagMax:0, paintSum:0, paintN:0, paintMax:0};
 (function(){ const orr=render; render=function(s,h){ _cb.paints++; if(s&&s.round_ts&&s.round_ts!==_cb.lastRts){ _cb.rounds++; _cb.lastRts=s.round_ts; }
   if(_lagMs!=null){ _cb.maxLag=Math.max(_cb.maxLag,_lagMs); _cb.lagSum+=_lagMs; _cb.lagN++; } return orr(s,h); };
@@ -126,14 +129,15 @@ setTimeout(()=>_beaconNow(), 1500);           // tell the engine at once that a 
 // 2.0.3 (21 Oct tape): a hidden/minimised window gets its timers throttled to once a minute by Chrome,
 // so the beacon is ALSO driven by the data stream (which is never throttled): at most one per 10 s.
 let _lastBeaconAt=0;
-function _sendBeacon(){ _lastBeaconAt=Date.now(); const b={paints:_cb.paints, rounds:_cb.rounds, last_round_ts:_cb.lastRts, sounds:_cb.sounds.splice(0),
+function _sendBeacon(){ _lastBeaconAt=Date.now(); const b={paints:_cb.paints, rounds:_cb.rounds, last_round_ts:_cb.lastRts,
+    recv_rounds:_cb.recvRounds, last_recv_round_ts:_cb.lastRecvRts, sounds:_cb.sounds.splice(0),
     mode:(_es?'sse':'poll'), snd_mode:_sndState(), snd:_sndHealth(), snd_outcomes:_outcomes.splice(0), locked:_locked(), hidden:document.hidden, max_lag_ms:Math.round(_cb.maxLag),
     avg_lag_ms:_cb.lagN?Math.round(_cb.lagSum/_cb.lagN):null, snd_seq:_sndSeq, boot_id:_sndBoot, page_up_s:Math.round((Date.now()-_cb.boot)/1000),
     // 2.1.1: engine publish -> painted, and paint cost (so tomorrow's tape proves each stage)
     pub_lag_avg_ms:_cb.pubLagN?Math.round(_cb.pubLagSum/_cb.pubLagN):null, pub_lag_max_ms:Math.round(_cb.pubLagMax),
     paint_avg_ms:_cb.paintN?Math.round(_cb.paintSum/_cb.paintN*10)/10:null, paint_max_ms:Math.round(_cb.paintMax*10)/10,
     sse_reconnects:_cb.sseReconnects, poll_mode:_cb.pollMode};
-  _cb.paints=0; _cb.rounds=0; _cb.maxLag=0; _cb.lagSum=0; _cb.lagN=0;
+  _cb.paints=0; _cb.rounds=0; _cb.recvRounds=0; _cb.maxLag=0; _cb.lagSum=0; _cb.lagN=0;
   _cb.pubLagSum=0; _cb.pubLagN=0; _cb.pubLagMax=0; _cb.paintSum=0; _cb.paintN=0; _cb.paintMax=0;
   try{ fetch('/api/client',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b),keepalive:true}).catch(()=>{}); }catch(e){} }
 setInterval(()=>{ if(Date.now()-_lastBeaconAt>=9500) _sendBeacon(); }, 10000);

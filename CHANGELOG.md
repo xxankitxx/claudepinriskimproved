@@ -1,3 +1,29 @@
+# 2.2.1 — first live day of 2.2 (11 Nov 2026)
+
+The session ran 09:20-15:40 with no session errors, no skipped rounds and no rejected orders: 5 trades, 4 won,
++14,485 (one SL_HIT, three trail exits, one protective stop at +1.1% after a +6.9% peak). Replaying the day
+through the lab gives the same 5 trades at the same prices, so live and replay agree with the 2.2 rules.
+
+What the tape showed:
+- **The feed fix worked.** NIFTY ticks more than 5 s late: 0.8% (every earlier day: 10-75%); median 1.7 s.
+  Socket drops: 7, all at :45 past the hour (a broker-side reconnect, back in 1-3 s), against 93 on 9 Nov.
+  The engine never missed a round; round time p50 25 ms, p99 185 ms.
+- **The late-feed pause fired 4 times.** 10:43 and 13:25: the broker sent nothing for 12-15 s and then a burst
+  (drained in ~7 s). 12:13 and 15:14: ticks drifted 5-10 s late over a minute while every engine round took
+  4-6x longer than usual -- other work on the laptop (the Apex folder shows a new module written 12:05-12:25).
+  The pause did its job each time; no entry fell inside one.
+- **All 23 engine sounds played** in the browser within 0-3 s, although the window was hidden 97% of the day.
+
+Fixed:
+- **Big jsonl sidecars piled up again** (212 MB decision_tape.jsonl today): the verified drop ran only after an
+  in-process merge, which 2.2 no longer does. A closing session now leaves a small `.sidecars.json` and the
+  detached merge deletes each sidecar once its parquet reads back the same row count. The leftovers of 19/21 Oct
+  and 9/11 Nov (17.5 GB) were checked row for row and removed; restarted days keep theirs.
+- **The feed alarm rang for 7-second broker stalls.** Entries still pause at once; the alarm now rings only if
+  the pause outlives `feed.lag_alarm_secs` (10). `FEED_HEALTH exch_lag_recovered` records how long it lasted.
+- **The dashboard beacon reported 0 rounds for a hidden window** (it counted painted rounds only). It now also
+  sends `recv_rounds` / `last_recv_round_ts`, the rounds the page received.
+
 # 2.2 — why trades lose, a feed that keeps up, and a lab to test rules (10 Nov 2026, market holiday)
 
 Study of the 15 recorded live days (19 Oct - 9 Nov 2026): 174 paper trades, net +1.74 lakh, of which +2.29 lakh

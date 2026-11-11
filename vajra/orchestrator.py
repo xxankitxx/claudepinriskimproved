@@ -249,6 +249,9 @@ class Orchestrator:
         self._last_trade_dir: str | None = None      # direction of the previous round trip (UP | DOWN)
         self._lag_closed = False
         self._lag_floor: float | None = None         # lowest exchange-lag reading of the session (clock skew)
+        self._lag_closed_ms = 0
+        self._lag_alarmed = False
+        self._lag_alarm_ms = int(float(cfg.get("feed", "lag_alarm_secs", default=10)) * 1000)
         self._imminent_ms = int(float(snd.get("imminent_secs", 10)) * 1000)
         self.closing_session_start = self.closing.index_frozen_from
         # 2.0.4 closing-session spot proxy (see vajra/closing.py): clean pre-freeze NIFTY basis history,
@@ -1204,15 +1207,24 @@ class Orchestrator:
         was = self._lag_closed
         if not was and lag > self._max_exch_lag:
             self._lag_closed = True
+            self._lag_closed_ms = round_ts
+            self._lag_alarmed = False
             self._emit_event("FEED_GAP", {"instrument": "NIFTY", "stage": "exch_lag", "lag_secs": lag,
                                          "limit_secs": self._max_exch_lag,
                                          "note": "NIFTY ticks are arriving late -- entries paused"},
                              ts_ms=round_ts)
-            self.sounds.emit("feed_alarm", round_ts, f"NIFTY feed {lag:.0f}s behind the exchange")
         elif was and lag < self._max_exch_lag / 2.0:
             self._lag_closed = False
             self._emit_event("FEED_HEALTH", {"instrument": "NIFTY", "stage": "exch_lag_recovered",
-                                            "lag_secs": lag}, ts_ms=round_ts)
+                                            "lag_secs": lag,
+                                            "paused_secs": round((round_ts - self._lag_closed_ms) / 1000, 1)},
+                             ts_ms=round_ts)
+        # 11 Nov: two of the four pauses were a 12-15 s broker stall drained in ~7 s. Entries pause at once
+        # (above); the alarm rings only when the pause outlives lag_alarm_secs, so it means something.
+        if (self._lag_closed and not self._lag_alarmed
+                and round_ts - self._lag_closed_ms >= self._lag_alarm_ms):
+            self._lag_alarmed = True
+            self.sounds.emit("feed_alarm", round_ts, f"NIFTY feed {lag:.0f}s behind the exchange -- entries paused")
         return self._lag_closed
 
     def _feed_health_view(self) -> dict | None:

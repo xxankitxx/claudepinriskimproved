@@ -274,6 +274,47 @@ def rebuild_from_jsonl(partition: Path, name: str, compression: str = "zstd",
     return n
 
 
+SIDECAR_MANIFEST = ".sidecars.json"   # 2.2: {tape: rows} a closing session hands to the detached merge
+
+
+def drop_sidecars(partition: Path, todo: dict) -> list[str]:
+    """Delete ``<tape>.jsonl`` for each {tape: rows} whose merged parquet reads back exactly ``rows``
+    rows and has no earlier-session .bak beside it. Anything that does not check out is kept."""
+    removed = []
+    partition = Path(partition)
+    for name, n in (todo or {}).items():
+        j = partition / f"{name}.jsonl"
+        p = partition / f"{name}.parquet"
+        try:
+            if not (isinstance(n, int) and n > 0 and j.exists() and p.exists()):
+                continue
+            if any(partition.glob(f"{name}.parquet.*.bak")) or part_paths(partition, name):
+                continue
+            with pq.ParquetFile(str(p)) as pf:
+                if pf.metadata.num_rows != n:
+                    continue
+            j.unlink()
+            removed.append(name)
+        except Exception:
+            continue
+    return removed
+
+
+def drop_manifest_sidecars(partition: Path) -> list[str]:
+    """Apply (and then remove) the sidecar manifest a closing session left in ``partition``."""
+    m = Path(partition) / SIDECAR_MANIFEST
+    try:
+        todo = json.loads(m.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    removed = drop_sidecars(partition, todo if isinstance(todo, dict) else {})
+    try:
+        m.unlink()
+    except OSError:
+        pass
+    return removed
+
+
 # =============================================================================
 # The writer
 # =============================================================================
@@ -688,7 +729,12 @@ class TapeWriter:
         if rt is not None and rt.is_alive():            # (a same-day restart's repair; normally long done)
             rt.join(timeout=min(timeout, 60.0))
         if not merge:                                   # the caller still has the raw-tick part open in this
-            return                                      # folder: it calls release_live() when that is shut
+            # folder: it calls release_live() when that is shut. The sidecars this session may drop are
+            # handed to the detached merge in a small manifest (11 Nov: a 212 MB decision_tape.jsonl
+            # stayed behind, because the drop used to run only after an in-process merge).
+            if self.drop_verified_jsonl:
+                self._write_sidecar_manifest()
+            return
         self.release_live()
         # 2.1.1: the six merges run side by side (Arrow releases the GIL); one read per part.
         from concurrent.futures import ThreadPoolExecutor
@@ -705,31 +751,39 @@ class TapeWriter:
         if self.drop_verified_jsonl:
             self._drop_verified_sidecars()
 
+    def _droppable_sidecars(self) -> dict:
+        """{tape: rows} for the big jsonl sidecars this session wrote completely: created by this
+        session, nothing dropped or failed, no earlier-session parquet .bak, parquet row count equal."""
+        out = {}
+        if self.parquet_rows_dropped or self.disk_errors or self.parquet_errors:
+            return out
+        for name in self.BIG_SIDECARS:
+            j = self.partition / f"{name}.jsonl"
+            if not (j.exists() and self._jfresh.get(name)):
+                continue
+            if any(self.partition.glob(f"{name}.parquet.*.bak")):
+                continue
+            n = self._jrows.get(name, 0)
+            if n == 0 or self._prows.get(name, 0) != n:
+                continue
+            out[name] = n
+        return out
+
+    def _write_sidecar_manifest(self) -> None:
+        todo = self._droppable_sidecars()
+        if not todo:
+            return
+        try:
+            tmp = self.partition / (SIDECAR_MANIFEST + ".tmp")
+            tmp.write_text(json.dumps(todo), encoding="utf-8")
+            tmp.replace(self.partition / SIDECAR_MANIFEST)
+        except OSError:
+            pass
+
     def _drop_verified_sidecars(self) -> list[str]:
         """Remove a big jsonl sidecar only when: this session created it, nothing was dropped or failed,
         there is no earlier-session parquet .bak, and the parquet footer reads back the same row count."""
-        removed = []
-        if self.parquet_rows_dropped or self.disk_errors or self.parquet_errors:
-            return removed
-        for name in self.BIG_SIDECARS:
-            j = self.partition / f"{name}.jsonl"
-            p = self.partition / f"{name}.parquet"
-            try:
-                if not (j.exists() and p.exists() and self._jfresh.get(name)):
-                    continue
-                if any(self.partition.glob(f"{name}.parquet.*.bak")):
-                    continue
-                n = self._jrows.get(name, 0)
-                if n == 0 or self._prows.get(name, 0) != n:
-                    continue
-                with pq.ParquetFile(str(p)) as pf:
-                    if pf.metadata.num_rows != n:
-                        continue
-                j.unlink()
-                removed.append(name)
-            except Exception:
-                continue
-        return removed
+        return drop_sidecars(self.partition, self._droppable_sidecars())
 
     def __enter__(self) -> "TapeWriter":
         return self
