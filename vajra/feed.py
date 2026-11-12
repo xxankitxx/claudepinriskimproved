@@ -154,6 +154,8 @@ class LiveBreezeSource:
         self.future_expiry_iso = future_expiry_iso or expiry_iso
         self.basis_mode = basis_mode
         self.vwap = VWAPTracker()
+        self._quote_cache: dict | None = {}           # broker key -> (tick dict, StrikeQuote|None); None = off
+        self._key_cache: dict = {}                    # (code, strike, right) -> broker key string
         self._subscribed_options: set[tuple] = set()
         self._sub_sent_ms: dict[tuple, int] = {}      # 2.0.3: when each option subscribe was sent
         self._sub_retry_at: dict[tuple, int] = {}     # failed subscribe -> earliest retry
@@ -744,19 +746,44 @@ class LiveBreezeSource:
                     self._subscribed_options.add(key)
                     self._sub_sent_ms[key] = ts_ms
                 want.append((pk, pr))
+        # 2.3: a tick in the store is a dict that is REPLACED, never edited, when a new tick arrives, so
+        # "same dict object as last round" means "nothing changed" -- the immutable StrikeQuote built
+        # from it is reused (the VWAP tracker returns the same value for an unchanged tick). At 4 rounds
+        # a second most of the ~650 quotes are unchanged; building them all cost as much as the engine.
+        qc = self._quote_cache
+        kc = self._key_cache
+        resolve = self.vwap.resolve
         for strike, right in want:
-            if True:
-                t = raw.get(self.breeze._key(code, "option", strike, right))
-                if not t or t.get("ltp") is None:
+            kk = (code, strike, right)
+            key = kc.get(kk)
+            if key is None:
+                key = kc[kk] = self.breeze._key(code, "option", strike, right)
+            t = raw.get(key)
+            if not t:
+                continue
+            if qc is not None:
+                c = qc.get(key)
+                if c is not None and c[0] is t:
+                    q = c[1]
+                    if q is not None:
+                        strikes[(strike, right)] = q
                     continue
-                vwap, src = self.vwap.resolve(instrument, strike, right,
-                                              t.get("ltp"), t.get("volume"), t.get("vwap"))
-                strikes[(strike, right)] = StrikeQuote(
-                    strike=strike, right=right, ltp=float(t["ltp"]),
-                    vwap=float(vwap), vwap_source=src,
-                    volume=int(t.get("volume") or 0), oi=int(t.get("oi") or 0),
-                    bid=float(t.get("bid") or 0.0), ask=float(t.get("ask") or 0.0),
-                )
+            ltp = t.get("ltp")
+            if ltp is None:
+                if qc is not None:
+                    qc[key] = (t, None)
+                continue
+            vol = t.get("volume")
+            vwap, src = resolve(instrument, strike, right, ltp, vol, t.get("vwap"))
+            q = StrikeQuote(
+                strike=strike, right=right, ltp=float(ltp),
+                vwap=float(vwap), vwap_source=src,
+                volume=int(vol or 0), oi=int(t.get("oi") or 0),
+                bid=float(t.get("bid") or 0.0), ask=float(t.get("ask") or 0.0),
+            )
+            strikes[(strike, right)] = q
+            if qc is not None:
+                qc[key] = (t, q)
         try:
             self._verify_option_data(instrument, code, want, raw, ts_ms)
         except Exception:

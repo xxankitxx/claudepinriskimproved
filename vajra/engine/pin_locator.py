@@ -32,15 +32,24 @@ def locate_pin(snapshot: MarketSnapshot, future: float, step: float) -> PinResul
     # 2.2: one pass over the chain (it used to sort both sides every round: 22% of the round time).
     spot = snapshot.spot
     best_ce = best_pe = None
-    key_ce = key_pe = None
+    oi_ce = oi_pe = d_ce = d_pe = 0
+    # order: higher OI, then nearer the spot, then the lower strike (2.3: no tuple per quote)
     for q in snapshot.strikes.values():
-        k = (q.oi, -abs(q.strike - spot), -q.strike)
+        oi, k = q.oi, q.strike
         if q.right == "CE":
-            if key_ce is None or k > key_ce:
-                key_ce, best_ce = k, q.strike
+            if best_ce is None or oi > oi_ce:
+                best_ce, oi_ce, d_ce = k, oi, abs(k - spot)
+            elif oi == oi_ce:
+                d = abs(k - spot)
+                if d < d_ce or (d == d_ce and k < best_ce):
+                    best_ce, d_ce = k, d
         elif q.right == "PE":
-            if key_pe is None or k > key_pe:
-                key_pe, best_pe = k, q.strike
+            if best_pe is None or oi > oi_pe:
+                best_pe, oi_pe, d_pe = k, oi, abs(k - spot)
+            elif oi == oi_pe:
+                d = abs(k - spot)
+                if d < d_pe or (d == d_pe and k < best_pe):
+                    best_pe, d_pe = k, d
     max_oi_ce, max_oi_pe = best_ce, best_pe
 
     return PinResult(

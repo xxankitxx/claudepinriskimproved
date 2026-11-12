@@ -68,10 +68,12 @@ class BasisMonitor:
 
         ewma_v = self._ewma.update(ts_ms / 1000.0, d_eff)
         self._std.push(d_eff)
-        std = self._std.std()
 
         abrupt = False
         abrupt_dir = 0
+        # 2.3: the rolling std is only needed when the move clears the noise floor (most rounds it
+        # is 0 by construction) -- same result, without an O(window) pass per instrument per round.
+        std = self._std.std() if abs(d_eff) >= self.noise_floor_pts else 0.0
         if std > 0 and abs(d_eff) >= self.noise_floor_pts:
             if abs(d_eff - ewma_v) > self.abrupt_k * std:
                 abrupt = True

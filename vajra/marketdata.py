@@ -49,7 +49,8 @@ class MarketSnapshot:
         )
 
     def all_strikes_sorted(self) -> list[StrikeQuote]:
-        return sorted(self.strikes.values(), key=lambda q: (q.strike, q.right))
+        # 2.3: the dict keys ARE (strike, right) and unique, so sorting the items needs no key function
+        return [q for _k, q in sorted(self.strikes.items())]
 
     def inferred_step(self) -> float | None:
         """Infer strike spacing from the chain (spec §5.1 'resolve per-instrument step')."""

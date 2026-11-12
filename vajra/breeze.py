@@ -136,6 +136,15 @@ def _bogus_token(tok) -> bool:
     return (not isinstance(tok, str)) or tok == "" or tok.endswith("!False") or tok.endswith("!None")
 
 
+try:                                    # 2.3: orjson decodes a tick ~5x faster than json
+    import orjson as _orjson
+    _loads = _orjson.loads
+except Exception:                       # pragma: no cover - plain json keeps everything working
+    import json as _json
+    _loads = _json.loads
+_STOCK_PREFIX = '2["stock",'         # socket.io EVENT as engine.io hands it over (its own '4' already stripped)
+
+
 class _BufferedSock:
     """Read-side buffer over the websocket's socket (see BreezeWrapper._buffer_socket). Everything but
     ``recv`` is the real socket's; ``recv`` only touches the network when the buffer is empty."""
@@ -200,6 +209,8 @@ class BreezeWrapper:
         self.fast_parsed = 0                            # ticks parsed by our fast path (no SDK dicts)
         self.tick_lag_s: float | None = None            # NIFTY cash: receive time - exchange time (EMA)
         self._tok_meta: dict[str, dict] = {}            # token -> contract meta for the fast parser
+        self._sub_err_seen: dict[str, tuple] = {}       # message -> (last logged mono, count since)
+        self._static: dict[str, tuple] = {}             # token -> (code, kind, strike, right, key, is_vix)
         self._ltt_cache: tuple = (None, None)           # (epoch_s, 'YYYY-MM-DD HH:MM:SS')
         self._breeze = None
         self._lock = threading.Lock()
@@ -474,7 +485,17 @@ class BreezeWrapper:
                 except IndexError:
                     break
                 try:
-                    sio._handle_eio_message(data)       # CONNECT acks, EVENT -> 'stock' -> _fast_on_message
+                    # 2.3: a quote tick arrives here as the text '2["stock",[...]]'. Decode it (orjson) and hand
+                    # the list straight to our parser; python-socketio's packet / namespace / handler
+                    # machinery cost more than the tick itself. Everything else keeps the library path.
+                    if type(data) is str and data.startswith(_STOCK_PREFIX):
+                        arr = _loads(data[1:])
+                        if len(arr) == 2 and arr[0] == "stock":
+                            self._fast_on_message(arr[1])
+                        else:
+                            sio._handle_eio_message(data)
+                    else:
+                        sio._handle_eio_message(data)   # CONNECT acks, other events
                 except Exception:
                     self.bad_ticks += 1
                 self.consumed += 1
@@ -533,7 +554,24 @@ class BreezeWrapper:
             t = None
         if t is not None:
             self.fast_parsed += 1
+            # 2.3: the contract half of a tick (code, kind, strike, right, key) never changes for a
+            # token. The first tick of a token goes through _normalize_tick (which also raises the
+            # unmapped-name warning) and its result is remembered; later ticks only convert numbers.
+            st = self._static.get(t["symbol"])
+            if st is not None:
+                self._ingest_fast(st, t, recv_ms)
+                return
             self._ingest([t], recv_ms)
+            sym = t["symbol"]
+            try:
+                n0 = self._normalize_tick(t)
+                if n0 is not None:
+                    name = (t.get("stock_name") or "").strip()
+                    is_vix = ("VIX" in name.upper()) or (t.get("stock_code") or sym) == INDIA_VIX_CODE
+                    self._static[sym] = (n0["stock_code"], n0["kind"], n0["strike"], n0["right"],
+                                         n0["_key"], is_vix)
+            except Exception:
+                pass
             return
         try:                                             # anything else: the SDK's own parser
             d = self._breeze.parse_data(data)
@@ -545,6 +583,65 @@ class BreezeWrapper:
                 self.bad_ticks += 1
         except Exception:
             self.bad_ticks += 1
+
+    def _ingest_fast(self, st: tuple, t: dict, recv_ms: int) -> None:
+        """One tick of a known token -> `latest` (and the raw recorder). Field for field what
+        _normalize_tick + _ingest produce for the dict _parse_fast builds (tests/test_intake_23.py)."""
+        code, kind, strike, right, key, is_vix = st
+        v = t["last"] or t["close"]
+        ltp = _f(v)
+        if is_vix:
+            ltp = normalize_vix(ltp, self.vix_fix)
+        v = t["avgPrice"]
+        vwap = _f(v) if v else None
+        v = t["ttq"]
+        if v is None or v == "":
+            v = t["ltq"]
+            if v == "":
+                v = None
+        vol = _i(v)
+        v = t.get("OI")
+        oi = _i(v) if v is not None and v != "" else None
+        v = t["bPrice"]
+        bid = _f(v) if v is not None and v != "" else None
+        v = t["sPrice"]
+        ask = _f(v) if v is not None and v != "" else None
+        norm = {"stock_code": code, "kind": kind, "strike": strike, "right": right, "ltp": ltp,
+                "vwap": vwap, "volume": vol, "oi": oi, "bid": bid, "ask": ask, "_key": key,
+                "_recv_ms": recv_ms}
+        ltt = t["ltt"]
+        lag_sample = None
+        if isinstance(ltt, (int, float)) and not isinstance(ltt, bool):
+            norm["_ltt_s"] = int(ltt)
+            if kind == "cash" and code == "NIFTY":
+                lag_sample = recv_ms / 1000.0 - float(ltt)
+        self.last_tick_mono = time.monotonic()
+        rec = self.raw_recorder
+        with self._lock:
+            self.ticks_received += 1
+            if rec is not None:
+                try:
+                    rec.record(norm, {"ltt": self._ltt_text(ltt)} if ltt is not None else t, recv_ms)
+                except Exception:
+                    pass
+            prev = self.latest.get(key)
+            if prev is not None:                    # carry forward a field a price-less tick omits
+                if ltp is None and prev.get("ltp") is not None:
+                    norm["ltp"] = prev["ltp"]
+                if vwap is None and prev.get("vwap") is not None:
+                    norm["vwap"] = prev["vwap"]
+                if vol is None and prev.get("volume") is not None:
+                    norm["volume"] = prev["volume"]
+                if oi is None and prev.get("oi") is not None:
+                    norm["oi"] = prev["oi"]
+                if bid is None and prev.get("bid") is not None:
+                    norm["bid"] = prev["bid"]
+                if ask is None and prev.get("ask") is not None:
+                    norm["ask"] = prev["ask"]
+            self.latest[key] = norm
+        if lag_sample is not None:
+            prev_lag = self.tick_lag_s
+            self.tick_lag_s = lag_sample if prev_lag is None else round(0.8 * prev_lag + 0.2 * lag_sample, 2)
 
     def _ltt_text(self, ltt):
         """Exchange time for the raw tape: epoch seconds -> 'YYYY-MM-DD HH:MM:SS' (cached per second;
@@ -804,6 +901,21 @@ class BreezeWrapper:
                       reason="NIFTY spot silent")
             self.request_reconnect(f"NIFTY spot silent {silent:.0f}s")
 
+    def _log_sub_error(self, msg: str) -> None:
+        """Put a subscription error on the tape (177 on 12 Nov, none of them readable afterwards):
+        one event per distinct message every 5 minutes, with the count since the last one."""
+        now = time.monotonic()
+        k = msg[:80]
+        last, n = self._sub_err_seen.get(k, (0.0, 0))
+        n += 1
+        if now - last >= 300 or not last:
+            self._log("sub_error", reason=msg, count=n)
+            self._sub_err_seen[k] = (now, 0)
+        else:
+            self._sub_err_seen[k] = (last, n)
+        if len(self._sub_err_seen) > 200:
+            self._sub_err_seen.clear()
+
     def _absorb_sdk_tokens(self, h) -> None:
         """Anything the SDK joined on its own (a subscribe whose token we could not resolve) lives only
         in the handler's tokenlist -- copy it into ours before that handler is thrown away."""
@@ -1040,6 +1152,7 @@ class BreezeWrapper:
             return True
         self.sub_errors += 1
         self.last_sub_error = str(r)[:160]
+        self._log_sub_error(self.last_sub_error)
         return False
 
     # ---- subscription kwargs (one place; used by the single and the batched subscribe) ----------
@@ -1108,6 +1221,7 @@ class BreezeWrapper:
         except Exception as e:
             self.sub_errors += 1
             self.last_sub_error = f"batch subscribe failed: {e!r}"[:160]
+            self._log_sub_error(self.last_sub_error)
             return 0
 
     # ---- tick handling ------------------------------------------------------

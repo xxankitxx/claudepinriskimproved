@@ -1,3 +1,26 @@
+# 2.3 — log sweep and speed (12 Nov 2026, evening)
+
+Sweep of every event tape, round tape, browser beacon and log since 19 Oct: no crash, round error, rejected
+order or failed sound on any day; the only session error ever taped is an expired key on 19 Oct. The one
+blind spot: subscription errors (177 on 12 Nov, 612 on 3 Nov) were counted but their text never reached the
+tape. They are now taped as `FEED_GAP sub_error` (one event per distinct message every 5 minutes).
+
+Speed (every change is checked number-for-number against the code it replaces; a replay of 11 Nov gives
+the same 5 trades at the same prices):
+- **Tick consumer 3.1x faster** (489 -> 158 us a tick on the loaded laptop). A quote packet is decoded
+  with orjson and handed straight to VAJRA's parser instead of going through python-socketio's packet /
+  namespace / handler machinery, and a known token's tick is normalised in one pass (its contract half --
+  code, kind, strike, right, key -- is remembered from its first tick). Other packets keep the library path.
+- **Live snapshot build 3x faster** (32.8 -> 10.7 ms a round in the benchmark). A tick in the store is
+  replaced, never edited, so an unchanged tick reuses last round's immutable quote object instead of
+  rebuilding ~650 quotes four times a second.
+- **Engine round 23% lighter** (47.4 -> 36.4 ms under the profiler): the chain-inferred strike step (a sort
+  of the whole chain) is computed only for an unlisted instrument, the rolling std of the basis only when
+  the move clears the noise floor, the max-OI pin without a tuple per quote, strikes sorted by their keys.
+
+Tests: `tests/test_intake_23.py` (6,000 random ticks through old and new paths, the consumer against
+engine.io's real decoder, quote reuse over 120 evolving rounds) and additions to `tests/test_perf_22.py`.
+
 # 2.2.2 — 12 Nov 2026: a slow engine and a NIFTY spot that died silently
 
 No trade all day: the feed-health gate was closed in 90% of rounds, correctly, because the NIFTY spot was

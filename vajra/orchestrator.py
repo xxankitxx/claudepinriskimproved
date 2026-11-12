@@ -18,6 +18,7 @@ import sys
 import threading
 import time
 from collections import deque
+from operator import attrgetter
 from dataclasses import dataclass, field, replace as _dc_replace
 
 from .mathx import RollingStats
@@ -37,6 +38,9 @@ from .regime import resolve_regime
 from .feed_health import FeedHealth
 from .alerts import SoundBus, ApproachEpisode
 from .closing import resolve_closing, parity_forward
+
+
+_VOLUME_OF = attrgetter("volume")
 
 
 def _sign(x: float) -> int:
@@ -188,6 +192,7 @@ class Orchestrator:
         # cross-instrument voice, silently. Surface it (council: TCS was in the universe + ws-map but
         # missing from nifty_weights.csv). Real fix = add its NSE factsheet weight to the CSV.
         self._missing_weights = [s for s in cfg.stocks if not weight_table.get(s, 0.0)]
+        self._stock_set = frozenset(cfg.stocks)      # 2.3: membership test per instrument per round
         if self._missing_weights:
             print(f"[VAJRA WARNING] {len(self._missing_weights)} tracked stock(s) have NO decision "
                   f"weight (zero cross-instrument voice): {', '.join(self._missing_weights)} — add "
@@ -361,9 +366,20 @@ class Orchestrator:
         kw["level_round_step"] = max(0.05, min(kw["level_round_step"], 0.1 * float(step)))
         return compute_band(snap, atm, basis, mode, step, **kw)
 
+    def _step_for(self, inst: str, snap) -> float:
+        """Strike step of an instrument. 2.3: a LISTED step (every shipped instrument) is read straight
+        from the table; the chain-inferred step (a sort of the whole chain) is computed only for an
+        unlisted one -- it used to be computed for all 24 instruments on every round."""
+        steps = self.cfg.raw.get("strike_step")
+        if steps:
+            v = steps.get(inst)
+            if v is not None and inst != "resolve_from_chain":
+                return float(v)
+        return self.cfg.strike_step(inst, snap.inferred_step())
+
     # ---- per-instrument volume activity ratio (§5.7 volume gate) -----------
     def _vol_ratio(self, st: InstrumentState, snap: MarketSnapshot) -> float:
-        total = float(sum(q.volume for q in snap.strikes.values()))
+        total = float(sum(map(_VOLUME_OF, snap.strikes.values())))
         if st.last_total_vol is None:
             st.last_total_vol = total
             delta = 0.0
@@ -444,7 +460,7 @@ class Orchestrator:
                 self._basis_gap[inst] = "NONFINITE_SPOT"
             signals[inst] = ContinuationSignal("NEUTRAL", 0, 0.0, False, False, False, 0.0, None, 0.0)
             return {}
-        step = self.cfg.strike_step(inst, snap.inferred_step())
+        step = self._step_for(inst, snap)
         mode = self._basis_mode_for(inst, st.is_index)
 
         # §5.1 basis
@@ -584,7 +600,7 @@ class Orchestrator:
         delta = (snap.spot - prev) if prev is not None else 0.0
         self._prev_spot[inst] = snap.spot
 
-        weight = self.decision.applied_weight(inst) if inst in self.cfg.stocks else (
+        weight = self.decision.applied_weight(inst) if inst in self._stock_set else (
             self.decision.w_self if inst == "NIFTY" else self.decision.w_bloc)
 
         upper = band.upper_level if band else None

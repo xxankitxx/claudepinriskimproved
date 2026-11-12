@@ -84,3 +84,49 @@ def test_floor_semantics_hold_for_fractional_quotients():
     for v in (24101.0, 24124.999, 24125.001, 24149.0):
         assert round_to(v, 50) == _ref_round_to(v, 50)
         assert math.isfinite(round_to(v, 50))
+
+
+def test_23_sorted_strikes_volume_sum_and_lazy_std_equal_the_old_code():
+    from operator import attrgetter
+    from vajra.engine.basis_monitor import BasisMonitor
+    rnd = random.Random(31)
+    for _ in range(200):
+        strikes = {}
+        for _i in range(rnd.randint(0, 40)):
+            k, r = rnd.randrange(24000, 26000, 50), rnd.choice(["CE", "PE"])
+            strikes[(k, r)] = StrikeQuote(k, r, 10.0, 10.0, "feed", rnd.randint(0, 9999), 1, 9.9, 10.1)
+        snap = MarketSnapshot(0, "NIFTY", 25000.0, 14.0, None, strikes)
+        assert snap.all_strikes_sorted() == sorted(strikes.values(), key=lambda q: (q.strike, q.right))
+        assert sum(map(attrgetter("volume"), strikes.values())) == sum(q.volume for q in strikes.values())
+
+    class _Ref(BasisMonitor):                       # the 2.2 update(): std computed on every call
+        def update(self, ts_ms, basis):
+            from vajra.engine.basis_monitor import BasisMonitorResult
+            from vajra.timeutil import basis_signal_weight
+            weight = basis_signal_weight(ts_ms, self.full_until, self.near_zero_after)
+            if self._last_basis is None:
+                self._last_basis = float(basis)
+                ewma_v = self._ewma.update(ts_ms / 1000.0, 0.0)
+                self._std.push(0.0)
+                return BasisMonitorResult(0.0, ewma_v, False, 0, weight)
+            d_basis = float(basis) - self._last_basis
+            self._last_basis = float(basis)
+            d_eff = 0.0 if abs(d_basis) < self.noise_floor_pts else d_basis
+            ewma_v = self._ewma.update(ts_ms / 1000.0, d_eff)
+            self._std.push(d_eff)
+            std = self._std.std()
+            abrupt, abrupt_dir = False, 0
+            if std > 0 and abs(d_eff) >= self.noise_floor_pts:
+                if abs(d_eff - ewma_v) > self.abrupt_k * std:
+                    abrupt, abrupt_dir = True, (1 if d_eff > ewma_v else -1)
+            return BasisMonitorResult(d_basis, ewma_v, abrupt, abrupt_dir, weight)
+
+    a, b = BasisMonitor(), _Ref()
+    basis, ts, flags = 10.0, 1_794_370_000_000, 0
+    for i in range(20000):
+        basis += rnd.choice([0, 0, 0, 0.3, -0.4, 1.5, -2.5, 6.0, -7.0])
+        ts += 250
+        ra, rb = a.update(ts, basis), b.update(ts, basis)
+        assert ra == rb
+        flags += ra.abrupt_flag
+    assert flags > 20                                # the comparison did exercise the abrupt branch
