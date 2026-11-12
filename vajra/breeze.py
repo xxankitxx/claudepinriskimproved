@@ -168,7 +168,7 @@ class BreezeWrapper:
     def __init__(self, creds: BreezeCredentials, vix_fix: bool = True,
                  reconnect_max_retries: int = 5, reconnect_backoff_secs: float = 2.0,
                  sdk_reconnect_grace_secs: float = 10.0, keepalive_secs: float = 10.0,
-                 buffered_reader: bool = True, switch_interval_ms: float = 0.5):
+                 buffered_reader: bool = True, switch_interval_ms: float = 0.0):
         self.creds = creds
         self.buffered_reader = bool(buffered_reader)    # 2.2: one big socket read per wake-up (see _buffer_socket)
         self.switch_interval_ms = float(switch_interval_ms)
@@ -235,6 +235,27 @@ class BreezeWrapper:
         self._supervisor: threading.Thread | None = None
         self._busy = False
         self._busy_since: float | None = None
+        # ---- 2.2.2 stream watch (12 Nov tape) -------------------------------------------------------
+        # After 3 of the day's reconnects the server ignored the re-join: 0-6 streams ticked in the next
+        # 20 s (a good reconnect: 300-400 within 5 s) and the NIFTY spot stayed dead 14, 27 and 10 min,
+        # because a few near-ATM options came back through the stale-quote re-subscribe and so the
+        # socket never looked silent. Every connect is now VERIFIED and the NIFTY spot is WATCHED.
+        self.stream_verify_secs = 10.0                  # look this long after a connect (12 Nov: healthy
+                                                        # reconnects >= 317 streams by 10 s, failed ones <= 6 at 20 s)
+        self.stream_min_frac = 0.10                     # ...for at least this share of the tokens
+        self.spot_silent_secs = 15.0                    # NIFTY spot silent this long while others tick
+        self.stream_watch_hours = ("09:15:30", "15:29:00")   # verify connects only in this IST window
+        self.spot_watch_hours = ("09:15:30", "15:14:00")     # the index stops ticking at the freeze
+        self.spot_key: str | None = None                # set by set_spot_watch() (the NIFTY cash key)
+        self._connect_ms: int | None = None             # wall ms of the last connect (any path)
+        self._verify_at: float | None = None            # monotonic time of the pending verification
+        self._verify_attempt = 0
+        self._spot_action_at = 0.0                      # last spot-watch action (rate limit)
+        self._spot_attempt = 0
+        self._spot_rebuilds: deque = deque(maxlen=8)    # monotonic times of spot-driven socket rebuilds
+        self._spot_backoff_until = 0.0
+        self.stream_rejoins = 0                         # re-joins the watch had to make
+        self.stream_rebuilds = 0                        # sockets it had to rebuild
 
     # ---- session ------------------------------------------------------------
     def connect(self):
@@ -261,9 +282,11 @@ class BreezeWrapper:
                     if not hasattr(self._breeze, "interval"):
                         self._breeze.interval = ""
                     self._session_ok = True            # a session is generated once; only the socket retries
-                # 2.2: a thread that just finished a socket read waits one switch interval for the
-                # interpreter lock while another thread computes; 5 ms (the default) per read starved
-                # the reader on 9 Nov. 0.5 ms costs ~1% throughput and removes the convoy.
+                # 2.2 lowered the interpreter switch interval to 0.5 ms. 2.2.2 (12 Nov tape): on a busy
+                # laptop every forced hand-over waits for Windows to schedule the other thread, and with
+                # ticks flowing that is ~2000 times a second -- engine rounds ran 10x slower (median
+                # 270 ms; 647 vs 136 ms in a loaded benchmark). The buffered reader alone keeps up at the
+                # default 5 ms, so the default is kept unless feed.switch_interval_ms is set (> 0).
                 if self.switch_interval_ms > 0:
                     try:
                         import sys as _sys
@@ -326,11 +349,13 @@ class BreezeWrapper:
             wrapper.last_tick_mono = time.monotonic()   # a fresh socket gets a fresh silence window
             wrapper._log("ws_connected", tokens=len(wrapper._tokens))
             wrapper._relax_eio_timeouts(h)
+            wrapper._clean_sdk_tokens(h)                # 2.2.2: never re-join a garbage token
             try:
                 orig_rewatch()                          # the SDK re-joins its tokenlist in one packet
                 wrapper._last_keepalive = time.monotonic()
             except Exception as e:
                 wrapper._log("ws_rejoin_failed", reason=repr(e))
+            wrapper._schedule_verify()                  # 2.2.2: and make sure the streams came back
 
         def _on_disconnect(*a):
             wrapper.ws_drops += 1
@@ -605,6 +630,10 @@ class BreezeWrapper:
         while not self._stop.is_set():
             if not self._busy:
                 self._keepalive()
+                try:
+                    self._stream_watch()
+                except Exception as e:                  # the watch must never take the supervisor down
+                    self._log("stream_watch_error", reason=repr(e)[:160])
             tick = min(0.5, max(0.02, self.keepalive_secs / 4)) if self.keepalive_secs > 0 else 0.5
             if self._reconnect_req.wait(tick):
                 self._reconnect_req.clear()
@@ -649,10 +678,131 @@ class BreezeWrapper:
         self._connected = True
         n = self._rejoin_all()
         self.last_tick_mono = time.monotonic()          # fresh silence window for the new socket
+        self._schedule_verify()
         self.reconnects_ok += 1
         self._log("ws_reconnect", ok=True, how="new_socket", resubscribed=n,
                   secs=round(time.monotonic() - t0, 1), reason=reason)
         return True
+
+    # ---- 2.2.2 stream watch -------------------------------------------------------------------------
+    def set_spot_watch(self, instrument: str = "NIFTY", until_hhmm: str | None = None) -> None:
+        """Watch ``instrument``'s cash stream (the NIFTY spot) in market hours, up to the index freeze."""
+        self.spot_key = self._key(self.code_for(instrument), "cash", None, None)
+        if until_hhmm:
+            hhmm = str(until_hhmm)
+            if len(hhmm) == 5:                          # stop a minute before the freeze ("15:15" -> "15:14:00")
+                h_, m_ = int(hhmm[:2]), int(hhmm[3:5])
+                m_ -= 1
+                if m_ < 0:
+                    h_, m_ = h_ - 1, 59
+                hhmm = f"{h_:02d}:{m_:02d}:00"
+            self.spot_watch_hours = (self.spot_watch_hours[0], hhmm)
+
+    @staticmethod
+    def _in_ist_window(now_s: float, window: tuple[str, str]) -> bool:
+        t = (int(now_s) + 19_800) % 86_400
+        wd = int((now_s + 19_800) // 86_400 + 3) % 7      # 0 = Monday (1 Jan 1970 was a Thursday)
+        if wd >= 5:
+            return False
+
+        def sec(x):
+            p = [int(v) for v in str(x).split(":")] + [0, 0]
+            return p[0] * 3600 + p[1] * 60 + p[2]
+        return sec(window[0]) <= t < sec(window[1])
+
+    def _schedule_verify(self) -> None:
+        self._connect_ms = int(time.time() * 1000)
+        self._verify_at = time.monotonic() + self.stream_verify_secs
+        self._verify_attempt = 0
+
+    def _clean_sdk_tokens(self, h) -> None:
+        """Make the SDK's own re-join list = our clean token set: garbage tokens ('4.1!False', which the
+        SDK records for a contract it could not resolve) out, every token we track in."""
+        try:
+            tl = getattr(h, "tokenlist", None)
+            if not isinstance(tl, set):
+                return
+            for t in [t for t in tl if _bogus_token(t)]:
+                tl.discard(t)
+            with self._lock:
+                ours = {t for t in self._tokens if not _bogus_token(t)}
+            tl |= ours
+        except Exception:
+            pass
+
+    def _streams_since(self, since_ms: int) -> int:
+        with self._lock:
+            return sum(1 for v in self.latest.values() if (v.get("_recv_ms") or 0) >= since_ms)
+
+    def _stream_watch(self) -> None:
+        """Runs on the supervisor thread. (1) a few seconds after every connect, check that the streams
+        came back; if not, re-join from OUR token list (outside the connect callback), once more, then
+        rebuild the socket. (2) the NIFTY spot silent while other streams tick -> same escalation."""
+        h = self._handler()
+        sio = getattr(h, "sio", None) if h is not None else None
+        if sio is None or not getattr(sio, "connected", False):
+            return
+        now_m, now_s = time.monotonic(), time.time()
+        with self._lock:
+            n_tok = sum(1 for t in self._tokens if not _bogus_token(t))
+        # (1) post-connect verification
+        if self._verify_at is not None and now_m >= self._verify_at:
+            self._verify_at = None
+            if n_tok and self._in_ist_window(now_s, self.stream_watch_hours):
+                seen = self._streams_since(self._connect_ms or 0)
+                need = max(3, int(self.stream_min_frac * n_tok))
+                if seen < need:
+                    self._verify_attempt += 1
+                    if self._verify_attempt <= 2:
+                        n = self._rejoin_all()
+                        self.stream_rejoins += 1
+                        self._log("ws_rejoin", reason="streams did not resume after connect", seen=seen,
+                                  need=need, attempt=self._verify_attempt, resubscribed=n)
+                        self._verify_at = now_m + self.stream_verify_secs     # look again
+                    else:
+                        self.stream_rebuilds += 1
+                        self._log("ws_streams_missing", seen=seen, need=need, action="rebuild socket")
+                        self.request_reconnect(f"streams did not resume ({seen}/{n_tok})")
+                    return
+        # (2) the NIFTY spot
+        key = self.spot_key
+        if not key or not self._in_ist_window(now_s, self.spot_watch_hours):
+            self._spot_attempt = 0
+            return
+        if self._verify_at is not None:                 # a verification is pending: let it act first
+            return
+        with self._lock:
+            last = (self.latest.get(key) or {}).get("_recv_ms")
+        now_ms = now_s * 1000.0
+        silent = (now_ms - last) / 1000.0 if last else None
+        if silent is None or silent < self.spot_silent_secs:
+            self._spot_attempt = 0
+            return
+        if now_m - self.last_tick_mono > 3.0:           # everything is silent: the ws_silent path handles it
+            return
+        if now_m - self._spot_action_at < self.spot_silent_secs or now_m < self._spot_backoff_until:
+            return
+        recent = [t for t in self._spot_rebuilds if now_m - t < 600]
+        if len(recent) >= 3:                            # rebuilding is not helping (an exchange-side halt?):
+            self._spot_backoff_until = now_m + 300      # stop churning the socket for 5 minutes
+            self._spot_rebuilds.clear()
+            self._log("ws_streams_missing", silent_secs=round(silent, 1), action="backing off 300 s",
+                      reason="NIFTY spot still silent after 3 socket rebuilds")
+            return
+        self._spot_action_at = now_m
+        self._spot_attempt += 1
+        if self._spot_attempt <= 2:
+            n = self._rejoin_all()
+            self.stream_rejoins += 1
+            self._log("ws_rejoin", reason="NIFTY spot silent while other streams tick",
+                      silent_secs=round(silent, 1), attempt=self._spot_attempt, resubscribed=n)
+        else:
+            self._spot_attempt = 0
+            self.stream_rebuilds += 1
+            self._spot_rebuilds.append(now_m)
+            self._log("ws_streams_missing", silent_secs=round(silent, 1), action="rebuild socket",
+                      reason="NIFTY spot silent")
+            self.request_reconnect(f"NIFTY spot silent {silent:.0f}s")
 
     def _absorb_sdk_tokens(self, h) -> None:
         """Anything the SDK joined on its own (a subscribe whose token we could not resolve) lives only
@@ -732,6 +882,7 @@ class BreezeWrapper:
             "inbox_dropped": self.inbox_dropped, "fast_parsed": self.fast_parsed,
             "exch_lag_s": self.tick_lag_s, "threads": threading.active_count(),
             "buffered": self.sockets_buffered,
+            "stream_rejoins": self.stream_rejoins, "stream_rebuilds": self.stream_rebuilds,
             "last_error": self.last_connect_error or self.last_sub_error,
         }
 

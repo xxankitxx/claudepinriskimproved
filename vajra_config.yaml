@@ -343,9 +343,11 @@ feed:
   ws_keepalive_secs: 10           # 2.1.1: idempotent re-join every N s so the socket client's write loop never idles out (0 = off)
   quote_stale_resub_secs: 45      # 2.1.1: a near-the-money option quote older than this is re-subscribed (its stream died quietly)
   # 2.2 (9 Nov tape: NIFTY 25-50 s behind the exchange for two hours, 93 socket drops while other jobs
-  # had the CPU). The socket is read in 64 KB chunks and threads hand the interpreter over every 0.5 ms.
+  # had the CPU). The socket is read in 64 KB chunks.
   ws_buffered_reader: "on"
-  switch_interval_ms: 0.5
+  # 2.2.2 (12 Nov tape): the 0.5 ms interpreter switch interval of 2.2 made every engine round ~10x slower
+  # on a busy laptop (each hand-over waits for Windows to schedule the other thread). 0 = Python's default.
+  switch_interval_ms: 0
   max_exch_lag_secs: 6            # NO NEW ENTRY while NIFTY ticks arrive more than this late (0 = off);
                                   # re-opens below half. Open positions are still managed.
   lag_alarm_secs: 10              # the feed alarm rings only if the pause lasts this long (short broker stalls are silent)
@@ -353,6 +355,7 @@ feed:
 # --- 2.2 runtime -----------------------------------------------------------------------------
 runtime:
   process_priority: above_normal  # live engine's Windows priority class: normal | above_normal | high
+  power_throttling: "off"         # 2.2.2: "off" = opt the live process out of Windows power throttling (EcoQoS)
 
 # --- Server / dashboard (localhost; NOT 8765 — MYTHOS owns 8765) -------------
 server:

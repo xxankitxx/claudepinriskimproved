@@ -12,3 +12,6 @@
 2026-11-11 15:46:25 D:\ClaudePinRiskImproved\tapes\2026-11-11: merged ['tick_tape', 'level_tape', 'basis_tape', 'decision_tape', 'signal_tape', 'order_tape', 'raw_ticks'] (382.2 s)
 2026-11-11 16:11:14 C:\Users\Ankit Madhogaria\AppData\Local\Temp\pytest-of-Ankit Madhogaria\pytest-202\test_spawned_merge_process_mer0\2026-11-09: merged ['order_tape'] (4.1 s)
 2026-11-11 16:33:12 C:\Users\Ankit Madhogaria\AppData\Local\Temp\pytest-of-Ankit Madhogaria\pytest-209\test_spawned_merge_process_mer0\2026-11-09: merged ['order_tape'] (0.4 s)
+2026-11-12 15:42:27 D:\ClaudePinRiskImproved\tapes\2026-11-12: merged ['tick_tape', 'level_tape', 'basis_tape', 'decision_tape', 'raw_ticks', 'dropped decision_tape.jsonl'] (145.7 s)
+2026-11-12 17:01:53 C:\Users\Ankit Madhogaria\AppData\Local\Temp\pytest-of-Ankit Madhogaria\pytest-271\test_spawned_merge_process_mer0\2026-11-09: merged ['order_tape'] (2.1 s)
+2026-11-12 17:11:01 C:\Users\Ankit Madhogaria\AppData\Local\Temp\pytest-of-Ankit Madhogaria\pytest-277\test_spawned_merge_process_mer0\2026-11-09: merged ['order_tape'] (4.4 s)

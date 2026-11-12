@@ -257,7 +257,7 @@ def build_app(orch):
     @app.get("/api/health")
     def health():
         st = orch.latest_state or {}
-        return Response(_dumps({"ok": True, "engine": "VAJRA", "version": "2.2.0", "round_ts": st.get("round_ts"),
+        return Response(_dumps({"ok": True, "engine": "VAJRA", "version": "2.2.2", "round_ts": st.get("round_ts"),
                                 "state_seq": getattr(orch, "state_seq", None), "streams": dict(_streams),
                                 "ser_ms": _cache["ser_ms"], "round": st.get("round"),
                                 "feed_health": st.get("feed_health"), "ws": st.get("ws")}),

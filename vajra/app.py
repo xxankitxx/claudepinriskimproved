@@ -247,6 +247,9 @@ def run(config_path: str | None = None, mode: str | None = None,
         _prio = str(cfg.get("runtime", "process_priority", default="above_normal"))
         if _power.raise_priority(_prio):
             _say(f"  vajra · process priority {_prio} (batch jobs on this laptop now wait for the engine)")
+        if str(cfg.get("runtime", "power_throttling", default="off")).lower() in ("off", "false", "0", "no"):
+            if _power.disable_power_throttling():
+                _say("  vajra · Windows power throttling off for this process (no slow-core parking in the background)")
         _ps = _power.status()
         if _ps.get("on_battery"):
             _say(f"  !! RUNNING ON BATTERY ({_ps.get('battery_pct')}%) -- plug the laptop in. A power-off "
@@ -465,7 +468,7 @@ def _connect_breeze(cfg, tape, ts_ms):
         sdk_reconnect_grace_secs=float(cfg.get("feed", "sdk_reconnect_grace_secs", default=10)),
         keepalive_secs=float(cfg.get("feed", "ws_keepalive_secs", default=10)),
         buffered_reader=str(cfg.get("feed", "ws_buffered_reader", default="on")).lower() not in ("off", "false", "0"),
-        switch_interval_ms=float(cfg.get("feed", "switch_interval_ms", default=0.5)),
+        switch_interval_ms=float(cfg.get("feed", "switch_interval_ms", default=0) or 0),
     )
     try:
         bw.connect()

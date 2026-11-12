@@ -108,6 +108,12 @@ class Orchestrator:
         # 2.0.4: NSE closing auction -- last entry / square-off / index-frozen time are resolved per
         # session date (+ expiry-day overrides) from closing_session in vajra_config.yaml.
         self.closing = resolve_closing(cfg, expiry.session_date, expiry.is_expiry_day)
+        _sw = getattr(breeze, "set_spot_watch", None) if breeze is not None else None
+        if callable(_sw):                       # 2.2.2: watch the NIFTY spot until the index freezes
+            try:
+                _sw("NIFTY", self.closing.index_frozen_from)
+            except Exception:
+                pass
         self.flatten_at = self.closing.flatten_before
         self.entry_cutoff = self.closing.last_entry
         if self.entry_cutoff > self.flatten_at:      # an entry after the flatten would be flattened at once (T29)

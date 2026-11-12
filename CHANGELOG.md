@@ -1,3 +1,38 @@
+# 2.2.2 — 12 Nov 2026: a slow engine and a NIFTY spot that died silently
+
+No trade all day: the feed-health gate was closed in 90% of rounds, correctly, because the NIFTY spot was
+frozen or 20-50 s late almost the whole session. The engine managed 1.8 rounds a second instead of 4 (round
+median 147 ms, against 25 ms on 11 Nov) and the socket dropped ~100 times, in bursts of 2-5 within seconds.
+
+**Root cause 1 -- the 0.5 ms interpreter switch interval introduced in 2.2.** With ticks flowing, every
+round took ~270 ms; whenever ticks stopped (spot dead), rounds ran in 20 ms. The intake itself is cheap
+(~250 us a tick, <10% of a core at 300 ticks/s). On a busy laptop, a forced hand-over between threads waits
+for Windows to schedule the other thread, and at 0.5 ms that happens up to 2000 times a second. A loaded
+benchmark of the engine's thread pattern: round median 647 ms at 0.5 ms vs 136 ms at the default 5 ms (8
+alternating runs each, no overlap). The buffered socket reader alone keeps up at the default (600/600
+frames a second under the same load; 97 without it). Fix: the switch interval is left at Python's default
+(`feed.switch_interval_ms: 0`), and the live process opts out of Windows power throttling (EcoQoS) so a
+background console window is not parked on the slow cores (`runtime.power_throttling: "off"`).
+Why 11 Nov was fine with the same setting: the laptop was less busy (the browser also painted 2x slower today).
+
+**Root cause 2 -- a re-join the server ignored.** After 3 of the reconnects the library made by itself, 0-6
+streams ticked in the next 20 s (a good reconnect: 300-400 within 5 s). The NIFTY spot, futures, sister
+indices and every stock stayed dead -- 10:31-10:45, 11:17-11:45, 12:35-12:45 -- until the next drop. A few
+near-the-money options came back through the stale-quote re-subscribe, so the socket never looked silent
+and the 20-s silence watchdog never fired. Fix (`vajra/breeze.py`):
+- every connect (the library's or ours) is verified 10 s later in market hours; fewer than 10% of the
+  subscribed streams ticking -> re-join from VAJRA's own clean token list, once more, then rebuild the socket
+  (the path that restored everything every time today);
+- the NIFTY spot silent 15 s while other streams tick (09:15:30 to a minute before the index freeze) ->
+  same escalation; after 3 rebuilds in 10 minutes that did not help it backs off for 5 minutes;
+- garbage tokens ('4.1!False', which the library records for a contract it could not resolve) are removed
+  from the library's own re-join list on every connect -- a plausible reason the server ignored the join.
+  `FEED_GAP ws_rejoin` / `ws_streams_missing` and `ws.stream_rejoins` / `stream_rebuilds` in health.
+
+Not a cause, but worth knowing: the session-key tool writes the same Breeze session into four engines
+every morning (VAJRA, Apex, Sensex/Trinetra, Mythos-Improved). VAJRA's tape shows no foreign streams and
+11 Nov ran cleanly with the same sharing, so it is not what broke today.
+
 # 2.2.1 — first live day of 2.2 (11 Nov 2026)
 
 The session ran 09:20-15:40 with no session errors, no skipped rounds and no rejected orders: 5 trades, 4 won,

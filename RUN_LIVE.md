@@ -130,6 +130,11 @@ NIFTY band-hero panel (spot marker vs pins) · the scream · NIFTY lean (real si
 - 2.2 evening review: `python tools/trade_review.py <date>` prints every trade with how it was entered and
   the day grouped by entry type; `python tools/lab.py run <name> --set key=value` replays every recorded day
   through the real engine with one setting changed (`python tools/lab.py compare base <name>`).
+- 2.2.2 (12 Nov): a reconnect whose re-join the server ignores now repairs itself within ~10-30 s (event
+  `FEED_GAP ws_rejoin`, then `ws_streams_missing` + a socket rebuild if needed). If the NIFTY spot on the
+  dashboard stops moving while options still update for more than a minute, that repair failed: restart
+  with -SkipVerify. The four engines on this laptop share one Breeze session key (the session-key tool);
+  heavy work on the laptop during market hours (replay batches, labs, test suites) slows every engine.
 - A stock code won't resolve → runtime `get_names()` then the `breeze.isec_override` map; a fallback is
   logged (only that stock's bloc-bias degrades — NIFTY execution is unaffected).
 - Verifiable pre-market: SDK installed, credentials present, live path imports, prev-close seed builds a

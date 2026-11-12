@@ -92,6 +92,30 @@ def _set_priority_class(cls: int) -> bool:
         return False
 
 
+def disable_power_throttling() -> bool:
+    """2.2.2: opt this process out of Windows power throttling (EcoQoS). A console window in the
+    background is otherwise a candidate for the slow efficiency cores at reduced clock on this laptop's
+    hybrid CPU -- the opposite of what a live feed needs. Execution speed and timer resolution both."""
+    if sys.platform != "win32":
+        return False
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        class _PPTS(ctypes.Structure):
+            _fields_ = [("Version", wintypes.ULONG), ("ControlMask", wintypes.ULONG),
+                        ("StateMask", wintypes.ULONG)]
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        k32.GetCurrentProcess.restype = wintypes.HANDLE
+        k32.SetProcessInformation.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD]
+        k32.SetProcessInformation.restype = wintypes.BOOL
+        st = _PPTS(1, 0x1 | 0x4, 0)            # control EXECUTION_SPEED + IGNORE_TIMER_RESOLUTION, both OFF
+        return bool(k32.SetProcessInformation(k32.GetCurrentProcess(), 4,      # ProcessPowerThrottling
+                                              ctypes.byref(st), ctypes.sizeof(st)))
+    except Exception:
+        return False
+
+
 def current_priority_class() -> int | None:
     try:
         import ctypes
@@ -120,4 +144,4 @@ def raise_priority(level: str = "above_normal") -> bool:
     return _set_priority_class(cls)
 
 
-__all__ = ["keep_awake", "release", "status", "raise_priority"]
+__all__ = ["keep_awake", "release", "status", "raise_priority", "disable_power_throttling"]
