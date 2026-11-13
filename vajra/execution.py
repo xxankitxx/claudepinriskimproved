@@ -204,13 +204,15 @@ class Executor:
 
     # ---- entry --------------------------------------------------------------
     def enter(self, ts_ms, direction, snapshot, band, conviction, threshold, channels,
-              is_expiry_day, expiry_iso, step, atm_strike=None) -> list[dict]:
+              is_expiry_day, expiry_iso, step, atm_strike=None, strike_override=None) -> list[dict]:
         if self.position is not None and self.position.open:
             return []
         # 2.0: strike from the CURRENT ATM (1.x used the held band's anchor-time ATM, which on
         # 10-15 10:00 bought 22750 CE with spot at 22855 — 105 pts ITM, not "ATM").
         atm = int(atm_strike) if atm_strike is not None else band.atm_strike
         strike, right = self.select_strike(direction, atm, step)
+        if strike_override is not None:             # 2.4: the gamma-ranked strike chosen by the orchestrator
+            strike = int(strike_override)
         q = snapshot.quote(strike, right)
         if q is None:
             return [_row(ts_ms, "REJECT", strike, right, 0, 0, 0, 0, "", self.live_orders, "NO_QUOTE", 0.0)]

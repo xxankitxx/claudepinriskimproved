@@ -1,3 +1,54 @@
+# 2.4 — gamma on the table, and what the 13 Nov losses do and do not justify (13 Nov 2026)
+
+**13 Nov live:** 4 trades, -18,584 (two full stops, two protective-stop scratches). Engine and feed were
+healthy (round median 25 ms, NIFTY ticks 0.4 s late); 11:30-12:23 the laptop lost power and internet, VAJRA
+reconnected by itself 77 s after power returned, flat throughout.
+
+**The losing re-entry (09:57, 25250 CE, -12.2%).** The first long (09:46, level 25205) peaked +6.5% and was
+scratched at +1.3%. The exit re-drew the levels around the new spot: upper 25205 -> 25235. Eight minutes
+later NIFTY spiked 11 points in 30 s to 25228 -- 7 points under the new level -- and the engine bought
+again, one strike higher. 25228.0 was the top (the high was 25229.3); the level was never touched; -12.2%
+in seven minutes. The 14:21 put was the same shape at the lower level (low 25054.5, level 25050).
+
+**What gamma says about those entries** (`vajra/greeks.py`, Black-76 on the parity forward): four days from
+expiry the ATM option had delta 0.49, gamma 0.00096 per point, needed ~31 NIFTY points to arm the trail and
+had its stop ~40 points away. Convexity 1.03: a typical 10-minute move in favour gains 3% more than the same
+move against loses. On an expiry morning the same numbers are 13 points to arm and convexity ~1.15.
+There was almost no gamma to leverage that day.
+
+**What was tested, and rejected** (engine-true replays of all 18 recorded days, `tools/lab.py`):
+
+| rule | trades | won | avg / trade | P&L | vs baseline |
+|---|---|---|---|---|---|
+| 2.3 rules (baseline) | 209 | 67% | +3.46% | +8.76 lakh | |
+| low gamma (> 18 pts to arm) waits for the level to break | 178 | 66% | +3.25% | +7.33 lakh | better 5 days, worse 9 |
+| same-side retry after a failed attempt needs the break (30 min) | 185 | 61% | +1.83% | +4.24 lakh | better 3, worse 11 |
+| no entry when the option arms in under 7 pts | 183 | 66% | +2.71% | +6.01 lakh | better 2, worse 2 |
+| strike with the most gamma per rupee (non-expiry) | 211 | 68% | +3.45% | +9.13 lakh | better 8, worse 6 |
+
+- Same-side retries after a failed attempt are not a losing class: 70 of them in the baseline, 69% won,
+  about +3.9% each.
+- Of 112 non-expiry entries, 10 never saw their level break within 30 minutes (all full stops; two were on
+  13 Nov). Momentum, position in the day's range, prior run-up and retry status at entry are the same for
+  them as for the rest, so they cannot be screened out; waiting for the break instead costs the other 102
+  entries ~2.5% each (+233% -> ~+100% in total). Buying just before the level is where the edge is.
+- More gamma was not better in the record: expiry mornings (13-15 pts to arm) did best; after 15:00 on expiry
+  day (6 pts to arm, premium ~35) entries lost 4.7% each (n=13); far-from-expiry entries were positive.
+  Stepping to another strike did not change any of this (paired comparison on 176 entries, no strike beat
+  the ATM by more than its standard error).
+
+**Shipped**
+- `vajra/greeks.py`: implied vol, delta, gamma, theta and the entry geometry (points to arm / to the stop,
+  convexity) for the option an entry would buy; tested against textbook values, finite differences and parity.
+- Every entry now records its greeks on the tape (`APPROACH_ALERT` / `TRADE` -> `ctx.greeks`), the dashboard
+  shows a GAMMA line for the option the next entry would buy (delta, gamma, points to arm, points to the stop,
+  IV, HIGH / SOME / LOW GAMMA), and `tools/trade_review.py` groups trades by it.
+- The four rules above exist as switches, all OFF (`entry.gamma_anticipate_max_arm_pts`,
+  `entry.retry_confirm_secs`, `entry.gamma_min_arm_pts`, `execution.strike_select`).
+- `tools/lab.py` runs now carry each trade's level, spot and entry context.
+- End-of-day tape merge: runs at normal priority (a below-normal merge on a laptop at 100% CPU did not start
+  for 12 minutes), retries for 15 minutes and logs why any parts remain. The start-of-day sweep stays low priority.
+
 # 2.3 — log sweep and speed (12 Nov 2026, evening)
 
 Sweep of every event tape, round tape, browser beacon and log since 19 Oct: no crash, round error, rejected

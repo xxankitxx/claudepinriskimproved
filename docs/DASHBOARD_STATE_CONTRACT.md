@@ -147,3 +147,20 @@ New element ids owned by `ui.js` (none of them is touched by the frozen scripts)
 * `jr-n`, `jr-real`, `jr-closed`, `jr-wl`, `jr-wr`, `jr-streak`, `jr-avgw`, `jr-avgl` — the journal day summary; `jr-spark` is the
   equity sparkline (redrawn only when the closed-trade set changes). `jr-summary` is gone. The journal table has 15 columns
   (entry, exit, hold, dir, strike, size, entry ₹, exit ₹, P&L %, P&L ₹, peak %, low %, exit reason, context, confluence).
+
+
+## 2.4 additions (gamma)
+
+```
+gamma               null | {direction, strike, right, price, iv, delta, gamma, theta_min, gamma_per_rupee,
+                            arm_pts, stop_pts, sigma_pts, arm_sigmas, convexity, theta_pct_10min,
+                            mode:'anticipate'|'confirm', strike_rule:'atm'|'gamma', fwd}
+                    the option the next entry on the nearer side would buy (refreshed once a second, every round
+                    while NIFTY is in an entry zone). ui.js -> the `gammaline` strip (ids gm-opt, gm-delta,
+                    gm-gamma, gm-arm, gm-stop, gm-iv, gm-level).
+guards              + gamma_anticipate_max_arm_pts, gamma_confirm_breach_pts, gamma_min_arm_pts,
+                      retry_confirm_secs, retry_side:'UP'|'DOWN'|null, strike_select   (0 / null / 'atm' = off)
+journal[].ctx       + greeks {strike, iv, delta, gamma, gamma_per_rupee, arm_pts, stop_pts, sigma_pts,
+                              arm_sigmas, convexity, mode, strike_rule} | null, retry_after_fail: bool
+```
+New gate codes (`idle.gate`), shown as WAIT like the 2.2 guards: GAMMA_CONFIRM_WAIT, GAMMA_TOO_TIGHT, RETRY_NEEDS_BREAK.

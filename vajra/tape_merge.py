@@ -27,6 +27,7 @@ from pathlib import Path
 
 from .tape import (LOCK_NAME, STALE_LOCK_SECS, live_marker_fresh, merge_lock_held)   # noqa: F401  (re-exported)
 
+LAST_ERROR = [None]        # why the last merge_partition() left parts behind (for the log)
 WAIT_SECS = 900            # how long main() waits for a live engine / another merge to let go of a folder
 RETRY_SECS = 15
 
@@ -76,7 +77,8 @@ def merge_partition(partition: Path) -> list[str]:
         if lock.exists() and not merge_lock_held(partition):
             lock.unlink()                                          # a merge that died long ago
         fd = os.open(str(lock), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-    except OSError:                                                # held by another merge (or unwritable folder)
+    except OSError as e:                                           # held by another merge (or unwritable folder)
+        LAST_ERROR[0] = f"lock: {e!r}"[:200]
         return []
     done = []
     try:
@@ -90,8 +92,8 @@ def merge_partition(partition: Path) -> list[str]:
             try:
                 if merge_parts(partition, name, S.TAPE_SCHEMAS.get(name), parts=snapshot[name]) is not None:
                     done.append(name)
-            except Exception:
-                pass                                               # that tape's parts stay; the others still merge
+            except Exception as e:                                 # that tape's parts stay; the others still merge
+                LAST_ERROR[0] = f"{name}: {e!r}"[:200]
             try:
                 os.utime(lock, None)                               # still alive: keep the lock fresh
             except OSError:
@@ -109,7 +111,7 @@ def merge_partition(partition: Path) -> list[str]:
             pass
 
 
-def spawn(partitions, root: Path | None = None) -> bool:
+def spawn(partitions, root: Path | None = None, low_priority: bool = True) -> bool:
     """Start the merge of ``partitions`` in a detached, low-priority process that outlives this one
     (and the console window). Returns False when nothing needed merging or the spawn failed -- the
     parts then simply wait for the next start."""
@@ -117,7 +119,9 @@ def spawn(partitions, root: Path | None = None) -> bool:
     if not parts:
         return False
     root = Path(root) if root is not None else Path(__file__).resolve().parents[1]
-    cmd = [sys.executable, "-m", "vajra.tape_merge", *parts]
+    # low_priority (the sweep at a live START) keeps the merge out of the engine's way. At the CLOSE it
+    # must not be: on 13 Nov a below-normal merge on a laptop at 100% CPU did not even start for 12 min.
+    cmd = [sys.executable, "-m", "vajra.tape_merge", *(["--low"] if low_priority else []), *parts]
     log = None
     try:
         (root / "logs").mkdir(exist_ok=True)
@@ -128,7 +132,7 @@ def spawn(partitions, root: Path | None = None) -> bool:
     kw = dict(cwd=str(root), stdin=subprocess.DEVNULL, stdout=out, stderr=out, close_fds=True)
     try:
         if os.name == "nt":
-            base = 0x08000000 | 0x00000200 | 0x00004000     # NO_WINDOW | NEW_PROCESS_GROUP | BELOW_NORMAL
+            base = 0x08000000 | 0x00000200 | (0x00004000 if low_priority else 0)   # NO_WINDOW | NEW_PROCESS_GROUP [| BELOW_NORMAL]
             try:
                 subprocess.Popen(cmd, creationflags=base | 0x01000000, **kw)   # + BREAKAWAY_FROM_JOB
             except OSError:
@@ -159,23 +163,30 @@ def stale_partitions(tape_root: Path, exclude: Path | None = None, look_back: in
 
 def main(argv=None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
+    low = "--low" in argv
+    argv = [x for x in argv if x != "--low"]
     if not argv:
         print(__doc__)
         return 2
-    _lower_priority()
+    if low:
+        _lower_priority()
     for a in argv:
         part = Path(a)
         t0 = time.perf_counter()
         try:
             done = merge_partition(part)
-            # nothing merged but parts remain: an engine is live there or another merge holds the lock.
-            # Wait for it (bounded) rather than leave the day unmerged until the next start.
-            while (not done and has_parts(part) and time.perf_counter() - t0 < WAIT_SECS
-                   and (live_marker_fresh(part) or merge_lock_held(part))):
+            # 13 Nov: on a laptop at 100% CPU with 2 GB free a first attempt merged nothing and gave up
+            # silently. Whatever the reason (an engine live there, another merge, memory, a file the
+            # virus scanner holds), keep trying for WAIT_SECS and say why in the log.
+            while has_parts(part) and time.perf_counter() - t0 < WAIT_SECS:
                 time.sleep(RETRY_SECS)
-                done = merge_partition(part)
-            left = " (parts remain: an engine is writing there or another merge holds the lock)" \
-                if has_parts(part) and not done else ""
+                done = done + merge_partition(part)
+            left = ""
+            if has_parts(part):
+                why = ("an engine is writing there" if live_marker_fresh(part) else
+                       "another merge holds the lock" if merge_lock_held(part) else
+                       (LAST_ERROR[0] or "unknown reason"))
+                left = f" (PARTS REMAIN: {why}; they merge at the next start)"
             print(f"{time.strftime('%Y-%m-%d %H:%M:%S')} {a}: merged {done or 'nothing'}{left} "
                   f"({time.perf_counter() - t0:.1f} s)", flush=True)
         except Exception as e:                           # never die silently: the log is the only witness

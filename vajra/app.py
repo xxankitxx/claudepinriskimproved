@@ -313,7 +313,7 @@ def run(config_path: str | None = None, mode: str | None = None,
         _say(f"  vajra · tapes closed in {time.perf_counter() - _t0:.1f} s")
         if _detach:
             from . import tape_merge
-            if tape_merge.spawn([tape.partition]):
+            if tape_merge.spawn([tape.partition], low_priority=False):
                 _say("  vajra · the day's tapes are being merged by a background process "
                      "(logs/tape_merge.log) -- this window can be closed now")
             elif tape_merge.has_parts(tape.partition):

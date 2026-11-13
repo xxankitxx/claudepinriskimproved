@@ -110,6 +110,8 @@ GROUPS = [
                                   "already breached" if t["ctx"]["breached"] else "approaching")),
     ("NIFTY move toward level, last 30 s", lambda t: _bucket(t["ctx"].get("move_30s"), [0, 3, 10], " pts")),
     ("feed lag at entry", lambda t: _bucket(t["ctx"].get("exch_lag_s"), [2, 6, 15], " s")),
+    ("gamma: NIFTY points the option needed to arm the trail", lambda t: _bucket(((t["ctx"].get("greeks") or {}).get("arm_pts")), [8, 15, 25, 35], " pts")),
+    ("gamma: entry mode", lambda t: ((t["ctx"].get("greeks") or {}).get("mode") or "n/a")),
     ("hour", lambda t: hms(t["entry_ts"])[:2] + ":00"),
     ("option", lambda t: t["right"]),
 ]
@@ -166,6 +168,12 @@ def main(argv=None) -> int:
                 bits.append(f"move30 {c['move_30s']:+.1f}")
             if c.get("exch_lag_s") is not None and c["exch_lag_s"] > 2:
                 bits.append(f"feed {c['exch_lag_s']:.0f}s late")
+            g = c.get("greeks") or {}
+            if g.get("arm_pts") is not None:
+                bits.append(f"gamma: arms after {g['arm_pts']:.0f} pts, stop {g.get('stop_pts') or 0:.0f} pts"
+                            + (f", convexity {g['convexity']:.2f}" if g.get("convexity") else ""))
+            if c.get("retry_after_fail"):
+                bits.append("retry after a failed attempt")
             pk = "" if t.get("peak_pct") is None else f" peak {t['peak_pct']:+.1f}% low {t['low_pct']:+.1f}%"
             print(f"  {hms(t['entry_ts'])} {t['strike']}{t['right']} {t['entry_price']:7.2f} -> {t['exit_price']:7.2f} "
                   f"{t['pnl_pct']:+6.1f}% {t['pnl']:+10,.0f} {t['hold_s']:5d}s {str(t.get('exit_reason')):14s}"

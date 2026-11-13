@@ -38,6 +38,7 @@ from .regime import resolve_regime
 from .feed_health import FeedHealth
 from .alerts import SoundBus, ApproachEpisode
 from .closing import resolve_closing, parity_forward
+from . import greeks as _gk
 
 
 _VOLUME_OF = attrgetter("volume")
@@ -258,6 +259,33 @@ class Orchestrator:
         self._rebuy: dict | None = None              # {"dir", "best", "ts"} after a profitable exit
         self._last_entry_ctx: dict | None = None
         self._last_trade_dir: str | None = None      # direction of the previous round trip (UP | DOWN)
+        # ---- 2.4 gamma-aware entry (vajra/greeks.py; CHANGELOG 2.4) ----------------------------------
+        # The engine buys options for their GAMMA. Each candidate entry is now priced: delta, gamma,
+        # and the NIFTY points the option needs to arm the trail (arm_pts) / hit the stop (stop_pts).
+        #  * gamma_anticipate_max_arm_pts: buying BEFORE the level breaks only pays when gamma is high
+        #    (few points to arm, so a 7-pt head start is a big share of the move). Above this many
+        #    arm_pts the entry waits until NIFTY has traded gamma_confirm_breach_pts THROUGH the level.
+        #  * gamma_min_arm_pts: below this the stop sits inside ordinary noise -> no entry.
+        #  * retry_confirm_secs: after a same-side attempt that failed (hard stop / protective stop),
+        #    the next same-side entry also needs the level to break, for this long.
+        self._g_anticipate_max_arm = float(_en.get("gamma_anticipate_max_arm_pts", 0) or 0)     # 0 = off
+        self._g_confirm_breach = float(_en.get("gamma_confirm_breach_pts", 2) or 0)
+        self._g_min_arm = float(_en.get("gamma_min_arm_pts", 0) or 0)                           # 0 = off
+        self._retry_confirm_ms = int(float(_en.get("retry_confirm_secs", 0) or 0) * 1000)       # 0 = off
+        _exc = cfg.get("execution", default={}) or {}
+        self._strike_select = str(_exc.get("strike_select", "atm")).lower()                     # atm | gamma
+        self._strike_select_expiry = str(_exc.get("strike_select_expiry", "atm")).lower()
+        self._gs_delta = (float(_exc.get("gamma_strike_min_delta", 0.35)),
+                          float(_exc.get("gamma_strike_max_delta", 0.60)))
+        self._gs_max_otm = int(_exc.get("gamma_strike_max_otm_steps", 2))
+        self._gs_max_spread = float(_exc.get("gamma_strike_max_spread_pct", 0.8))
+        self._fail: dict | None = None               # last failed attempt: {"dir", "ts"}
+        self._entry_plan: dict | None = None         # this round's candidate: strike + greeks + geometry
+        self._gamma_view: dict | None = None         # what the cockpit shows (the nearer side's option)
+        self._gamma_view_ts = 0
+        from datetime import datetime as _dt, time as _tm
+        from .timeutil import IST as _IST
+        self._expiry_ms = int(_dt.combine(expiry.expiry_date, _tm(15, 30), tzinfo=_IST).timestamp() * 1000)
         self._lag_closed = False
         self._lag_floor: float | None = None         # lowest exchange-lag reading of the session (clock skew)
         self._lag_closed_ms = 0
@@ -885,6 +913,22 @@ class Orchestrator:
         entry = self._approach_entry(nifty_band, nifty_snap, signals, dr) if in_session else None
         if nifty_snap is not None:
             self._track_spot(round_ts, nifty_snap.spot, entry)
+        # 2.4: price the option this entry would buy (greeks + what it asks of the index)
+        self._entry_plan = None
+        if nifty_snap is not None and nifty_band is not None:
+            _atm = ((self._nifty_head.get("atm") or nifty_band.atm_strike)
+                    if self.strike_from == "current_atm" else nifty_band.atm_strike)
+            try:
+                if entry is not None:
+                    self._entry_plan = self._plan_entry(round_ts, entry["direction"], nifty_snap, int(_atm))
+                    self._gamma_view = self._entry_plan or self._gamma_view
+                elif round_ts - self._gamma_view_ts >= 1000 and nifty_band.upper_level is not None:
+                    _d = ("UP" if (nifty_band.upper_level - nifty_snap.spot) <= (nifty_snap.spot - nifty_band.lower_level)
+                          else "DOWN")
+                    self._gamma_view = self._plan_entry(round_ts, _d, nifty_snap, int(_atm))
+                    self._gamma_view_ts = round_ts
+            except Exception:
+                self._entry_plan = None
         health_ok = self._health is None or self._health.ok
         if self._proxy_on and self._basis_ref_src != "median_clean_basis":
             health_ok = False        # 2.0.4: no pre-freeze basis -> the closing-session spot is a guess
@@ -973,7 +1017,8 @@ class Orchestrator:
                 "confidence": conf["confidence"], "same_side": conf["same_side"],
                 "opp_side": conf["opp_side"], "conflicted": conf["conflicted"],
                 "regime": self.regime.name,
-                "buy": f"NIFTY {int(cur_atm)} {'CE' if entry['direction']=='UP' else 'PE'}",
+                "buy": (f"NIFTY {int(self._entry_plan['strike'] if (self._entry_plan and self._entry_plan.get('strike_rule') == 'gamma') else cur_atm)} "
+                        f"{'CE' if entry['direction']=='UP' else 'PE'}"),
                 **self._entry_context(round_ts, entry),
             }, round_ts)
             self._last_entry_ctx = self._entry_context(round_ts, entry)
@@ -986,6 +1031,9 @@ class Orchestrator:
                 step=self.states["NIFTY"].step,
                 # 2.0: buy the CURRENT ATM (execution.strike_from: current_atm). "anchor_atm" = 1.0 behaviour
                 atm_strike=(int(cur_atm) if self.strike_from == "current_atm" else None),
+                strike_override=(self._entry_plan["strike"] if (self._entry_plan is not None and
+                                                                 self._entry_plan.get("strike_rule") == "gamma")
+                                 else None),
             )
             self._emit_orders(order_rows, confluence=conf)
             _r0 = order_rows[0] if order_rows else None
@@ -1023,6 +1071,15 @@ class Orchestrator:
                 self._entry_block = f"WAIT - re-buy needs NIFTY beyond {self._rebuy['best']:.0f}"
             elif gate == Reason.BREACH_TOO_DEEP:
                 self._entry_block = "WAIT - NIFTY already far through the level"
+            elif gate == Reason.GAMMA_CONFIRM_WAIT and self._entry_plan is not None and entry is not None:
+                self._entry_block = (f"WAIT - low gamma ({self._entry_plan['arm_pts']:.0f} pts to arm): enter only "
+                                     f"once NIFTY trades through {entry['level']:.0f}")
+            elif gate == Reason.GAMMA_TOO_TIGHT and self._entry_plan is not None:
+                self._entry_block = (f"WAIT - stop only {(self._entry_plan.get('stop_pts') or 0):.0f} pts away "
+                                     f"(premium too thin for this gamma)")
+            elif gate == Reason.RETRY_NEEDS_BREAK and entry is not None:
+                self._entry_block = (f"WAIT - last {'up' if entry['direction'] == 'UP' else 'down'} attempt failed: "
+                                     f"enter only once NIFTY trades through {entry['level']:.0f}")
 
         # ---- manage an open position EVERY round NIFTY is present (2.0: even when this round's
         # band/basis failed — 1.x skipped stops and the 15:25 flatten on such rounds).
@@ -1070,6 +1127,13 @@ class Orchestrator:
                         self._rebuy = {"dir": self._position_dir, "best": self._trade_best_spot, "ts": round_ts}
                 if _xr["action"] == "EXIT":
                     self._trade_best_spot = None
+                    # 2.4: remember a same-side attempt that failed (no trail profit) -- see retry_confirm_secs
+                    _why = _xr.get("exit_reason")
+                    if self._position_dir:
+                        if _why in ("SL_HIT", "BE_STOP") or _xr.get("pnl_realized", 0.0) <= 0:
+                            self._fail = {"dir": self._position_dir, "ts": round_ts}
+                        elif self._fail is not None and self._fail.get("dir") == self._position_dir:
+                            self._fail = None            # that side just paid: the slate is clean
             if not self.executor.position_active:
                 self._position_dir = None
                 self._last_confluence = None
@@ -1183,6 +1247,19 @@ class Orchestrator:
         d = entry["direction"]
         if self._max_breach_pts > 0 and entry["dist"] < -self._max_breach_pts:
             return Reason.BREACH_TOO_DEEP
+        # 2.4 gamma-aware entry
+        plan = self._entry_plan
+        if plan is not None:
+            if self._g_min_arm > 0 and plan["arm_pts"] < self._g_min_arm:
+                return Reason.GAMMA_TOO_TIGHT
+            if plan["mode"] == "confirm" and entry["dist"] > -self._g_confirm_breach:
+                return Reason.GAMMA_CONFIRM_WAIT
+        f = self._fail
+        if f is not None and self._retry_confirm_ms > 0 and f["dir"] == d:
+            if ts - f["ts"] > self._retry_confirm_ms:
+                self._fail = None
+            elif entry["dist"] > -self._g_confirm_breach:
+                return Reason.RETRY_NEEDS_BREAK
         rb = self._rebuy
         if self._rebuy_guard and rb is not None and rb["dir"] == d and snap is not None:
             beyond = (snap.spot - rb["best"]) if d == "UP" else (rb["best"] - snap.spot)
@@ -1193,6 +1270,48 @@ class Orchestrator:
             if mv is not None and mv < -self._retreat_pts:
                 return Reason.ENTRY_RETREATING
         return None
+
+    def _plan_entry(self, ts: int, direction: str, snap, atm: int) -> dict | None:
+        """Greeks and geometry of the option an entry in ``direction`` would buy now (2.4).
+        Strike: the current ATM, or -- execution.strike_select: gamma -- the strike among ATM..OTM-N
+        with the most gamma per rupee whose delta, premium and spread are tradable."""
+        step = self.states["NIFTY"].step
+        right = "CE" if direction == "UP" else "PE"
+        sgn = 1 if direction == "UP" else -1
+        fwd = _gk.forward_from_chain(snap, atm, step) or snap.spot
+        t = _gk.years_to_expiry(ts, self._expiry_ms)
+        by_gamma = (self._strike_select_expiry if self.expiry.is_expiry_day else self._strike_select) == "gamma"
+        floor = (self.executor.min_premium_expiry if self.expiry.is_expiry_day
+                 else self.executor.min_premium_nonexpiry)
+        atm_g = best = None
+        for i in range(0, (self._gs_max_otm if by_gamma else 0) + 1):
+            k = int(atm + sgn * i * step)
+            q = snap.quote(k, right)
+            if q is None:
+                continue
+            px = _gk._mid(q)
+            if px is None:
+                continue
+            g = _gk.greeks(px, fwd, k, t, right)
+            if g is None:
+                continue
+            if i == 0:
+                atm_g = g
+            if not by_gamma:
+                break
+            spread = (100.0 * (q.ask - q.bid) / px) if (q.bid > 0 and q.ask >= q.bid) else 0.0
+            if (self._gs_delta[0] <= abs(g.delta) <= self._gs_delta[1] and px >= floor
+                    and spread <= self._gs_max_spread):
+                if best is None or g.gamma_per_rupee > best.gamma_per_rupee:
+                    best = g
+        g = best or atm_g
+        if g is None:
+            return None
+        geo = _gk.entry_geometry(g, self.executor.trail_activate_pct, self.executor.hard_sl_pct)
+        mode = ("confirm" if (self._g_anticipate_max_arm > 0 and geo["arm_pts"] > self._g_anticipate_max_arm)
+                else "anticipate")
+        return {"direction": direction, **g.as_dict(), **geo, "mode": mode,
+                "strike_rule": ("gamma" if (by_gamma and best is not None) else "atm"), "fwd": round(fwd, 2)}
 
     def _entry_context(self, ts: int, entry: dict) -> dict:
         """What the tape should remember about the moment of an entry (2.2: the 15-day study had to
@@ -1210,7 +1329,12 @@ class Orchestrator:
                           "stop" if last_exit else None),
                 "exch_lag_s": lag, "breached": bool(entry.get("breached")),
                 "same_side": (self._last_trade_dir == d) if self._last_trade_dir else None,
-                "dist_pts": round(float(entry.get("dist", 0.0)), 2)}
+                "dist_pts": round(float(entry.get("dist", 0.0)), 2),
+                # 2.4: the option's greeks and what it asks of the index
+                "greeks": ({k: self._entry_plan.get(k) for k in (
+                    "strike", "iv", "delta", "gamma", "gamma_per_rupee", "arm_pts", "stop_pts", "sigma_pts",
+                    "arm_sigmas", "convexity", "mode", "strike_rule")} if self._entry_plan else None),
+                "retry_after_fail": bool(self._fail is not None and self._fail.get("dir") == d)}
 
     def _lag_gate(self, round_ts: int) -> bool:
         """2.2 (9 Nov tape: 18 entries, most of the afternoon's on a NIFTY price 25-50 s old). True
@@ -1995,6 +2119,9 @@ class Orchestrator:
         "ENTRY_RETREATING": "NIFTY is at the level but not moving toward it -- waiting for it to turn",
         "REBUY_WAIT": "re-buy after a profit waits for NIFTY to pass the last trade's best price",
         "BREACH_TOO_DEEP": "NIFTY is already far through the level",
+        "GAMMA_CONFIRM_WAIT": "low gamma -- waiting for NIFTY to trade through the level",
+        "GAMMA_TOO_TIGHT": "the option's stop is only a few points away -- no entry",
+        "RETRY_NEEDS_BREAK": "the last attempt on this side failed -- waiting for the level to break",
     }
 
     def _idle_diagnostics(self, ts) -> dict:
@@ -2196,7 +2323,15 @@ class Orchestrator:
             "feed_lag": {"closed": bool(self._lag_closed), "limit_s": self._max_exch_lag,
                          "reopen_s": self._max_exch_lag / 2.0,
                          "lag_s": (getattr(self._breeze, "tick_lag_s", None) if self._breeze is not None else None)},
+            "gamma": (dict(self._gamma_view) if self._gamma_view else None),      # 2.4: the nearer side's option
             "guards": {"retreat_secs": self._retreat_secs, "retreat_pts": self._retreat_pts,
+                       "gamma_anticipate_max_arm_pts": self._g_anticipate_max_arm,
+                       "gamma_confirm_breach_pts": self._g_confirm_breach,
+                       "gamma_min_arm_pts": self._g_min_arm,
+                       "retry_confirm_secs": self._retry_confirm_ms / 1000.0,
+                       "retry_side": (self._fail["dir"] if self._fail else None),
+                       "strike_select": (self._strike_select_expiry if self.expiry.is_expiry_day
+                                         else self._strike_select),
                        "momentum_min_pts": -self._retreat_pts,
                        "breakeven": (None if self.executor.breakeven_arm_pct <= 0 else
                                      {"arm_pct": self.executor.breakeven_arm_pct,

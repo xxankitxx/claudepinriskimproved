@@ -634,3 +634,13 @@ body.frozen .guards{opacity:.28;filter:saturate(.3)}
 @media (max-width:1499px){
   #ch-routing{display:none}            /* the narrow header keeps two chip rows for health · trades · regime · expiry */
 }
+
+/* 2.4 gamma line */
+.gammaline .gchip{color:var(--ink,#cfd6e4)}
+.gammaline .gchip:empty{display:none}
+.gm-level{padding:0 8px;border-radius:3px;font-weight:700;letter-spacing:.04em;flex:none}
+.gm-level.hi{color:#0b1a12;background:#3ddc97}
+.gm-level.mid{color:#1a1405;background:#e0b341}
+.gm-level.lo{color:var(--mut);border:1px dashed var(--line)}
+.gammaline{white-space:normal;overflow:visible}
+.gammaline .g-list{flex-wrap:wrap;overflow:visible;row-gap:3px}

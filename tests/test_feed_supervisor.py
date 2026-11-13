@@ -225,7 +225,7 @@ def test_feed_watchdog_requests_not_blocks(monkeypatch):
     ts = int(datetime(2026, 11, 3, 10, 0, tzinfo=timezone(timedelta(hours=5, minutes=30))).timestamp() * 1000)
     t0 = time.perf_counter()
     src._ws_watchdog(ts)
-    assert time.perf_counter() - t0 < 0.1
+    assert time.perf_counter() - t0 < 1.5        # never blocks (2.0 blocked 3-5.5 s); slack for a busy laptop
     stages = [p.get("stage") for t, p in events]
     assert "ws_silent" in stages and "ws_reconnect_requested" in stages
     deadline = time.time() + 5

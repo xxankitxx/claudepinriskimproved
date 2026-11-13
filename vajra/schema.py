@@ -54,6 +54,9 @@ class Reason:
     ENTRY_RETREATING = "ENTRY_RETREATING"       # 2.2: NIFTY is moving AWAY from the level -> wait
     REBUY_WAIT = "REBUY_WAIT"                   # 2.2: after a profit, same-side re-buy waits for a new extreme
     BREACH_TOO_DEEP = "BREACH_TOO_DEEP"         # 2.2: spot already far through the level (optional guard)
+    GAMMA_CONFIRM_WAIT = "GAMMA_CONFIRM_WAIT"   # 2.4: low gamma -> enter only once the level has actually broken
+    GAMMA_TOO_TIGHT = "GAMMA_TOO_TIGHT"         # 2.4: the stop is only a few index points away (noise would hit it)
+    RETRY_NEEDS_BREAK = "RETRY_NEEDS_BREAK"     # 2.4: last same-side attempt failed -> the level must break first
     BEFORE_TRADE_START = "BEFORE_TRADE_START"
     AFTER_LAST_ENTRY = "AFTER_LAST_ENTRY"
     NO_LEVELS = "NO_LEVELS"

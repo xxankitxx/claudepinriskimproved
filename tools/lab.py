@@ -156,6 +156,19 @@ def run_day(args) -> dict:
                            "qty": r["qty"], "in": ent["fill_price"], "out": r["fill_price"],
                            "pnl": r["pnl_realized"], "reason": r["exit_reason"]})
             ent = None
+    # entry context: the APPROACH_ALERT of the entry round and the TRADE event of the exit round
+    alerts = {e["ts"]: e["payload"] for e in tape.events if e["event_type"] == "APPROACH_ALERT"}
+    closed = {e["payload"].get("entry_ts"): e["payload"] for e in tape.events if e["event_type"] == "TRADE"}
+    for t in trades:
+        a = alerts.get(t["ets"]) or {}
+        c = closed.get(t["ets"]) or {}
+        t["level"], t["spot"], t["dist"] = a.get("level"), a.get("spot"), a.get("dist_pts")
+        t["peak_pct"], t["low_pct"] = c.get("peak_pct"), c.get("low_pct")
+        t["ctx"] = {k: v for k, v in a.items() if k not in ("same_side", "opp_side", "pulls_by_instrument",
+                                                               "direction", "level_side", "level", "spot",
+                                                               "dist_pts", "verdict", "confidence", "conflicted",
+                                                               "regime", "buy")}
+        t["same_side_prev"] = (c.get("ctx") or {}).get("same_side")
     by = {}
     for t in trades:
         b = by.setdefault(t["reason"], [0, 0.0])

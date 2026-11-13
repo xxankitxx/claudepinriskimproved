@@ -241,8 +241,8 @@ def test_spawned_merge_process_merges_the_folder(tmp_path):
     tw.close(merge=False)
     tw.release_live()
     root = Path(__file__).resolve().parents[1]
-    assert tape_merge.spawn([tw.partition], root=root) is True
-    deadline = time.time() + 600        # a low-priority process on a busy laptop can take minutes
+    assert tape_merge.spawn([tw.partition], root=root, low_priority=False) is True   # as the live close does
+    deadline = time.time() + 600        # a busy laptop can take minutes
     while time.time() < deadline and tape_merge.has_parts(tw.partition):
         time.sleep(0.25)
     assert not tape_merge.has_parts(tw.partition)

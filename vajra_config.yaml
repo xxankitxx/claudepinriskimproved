@@ -113,6 +113,20 @@ entry:
   momentum_guard_secs: 30         # 0 = off = the 2.1 behaviour (2.2 default: 30)
   momentum_min_pts: 3
   max_breach_pts: 0               # 0 = off; N = no entry once NIFTY is more than N pts THROUGH the level
+  # ---- 2.4 gamma-aware entry rules (vajra/greeks.py). ALL OFF: each was replayed over the 18 recorded
+  # days (tools/lab.py, CHANGELOG 2.4) after the 13 Nov losses, and each made the results WORSE:
+  #   baseline (these off)                         209 trades, 67% won, +3.46% a trade
+  #   low gamma waits for the level to break       178 trades, 66% won, +3.25%   (better on 5 days, worse on 9)
+  #   retry after a failed attempt needs the break 185 trades, 61% won, +1.83%   (better on 3, worse on 11)
+  #   no entry under 7 pts to arm                  183 trades, 66% won, +2.71%
+  # Why: only 1 non-expiry entry in 11 never sees its level break (always a full stop, like two on 13 Nov),
+  # and nothing at entry time tells them apart; waiting for the break delays the other 10 by ~2.5% each.
+  # The greeks are still computed for every entry, written to the tape and shown on the dashboard.
+  gamma_anticipate_max_arm_pts: 0 # 0 = off; N = when the option needs more than N NIFTY pts to arm the trail,
+                                  #          enter only after NIFTY has traded gamma_confirm_breach_pts THROUGH the level
+  gamma_confirm_breach_pts: 2
+  gamma_min_arm_pts: 0            # 0 = off; N = no entry when the option arms in fewer than N pts (stop inside noise)
+  retry_confirm_secs: 0           # 0 = off; N = for N s after a same-side hard / protective stop the level must break first
 
 # --- §5.4 Freshness / recalc (FIXED 20-min interval — operator rule) ---------
 # Pre-open: levels SEEDED from the prev-day close. First intraday recompute at calc_start
@@ -269,6 +283,15 @@ execution:
   post_profit_cooldown_secs: 15
   default_qty_lots: 1             # fallback only if full-capital sizing is unavailable
   flatten_before: "15:38"         # 2.0.4: superseded by closing_session.flatten_before (kept in sync)
+  # 2.4: strike_select "gamma" buys, among the ATM and the next out-of-the-money strikes, the one with the
+  # most gamma per rupee (delta, premium floor and spread permitting). Lab over 18 days: no better and no
+  # worse than the ATM (+3.45% vs +3.46% a trade; better on 8 days, worse on 6), so the ATM stays.
+  strike_select: atm              # atm | gamma   (non-expiry days)
+  strike_select_expiry: atm       # atm | gamma   (expiry day)
+  gamma_strike_min_delta: 0.35
+  gamma_strike_max_delta: 0.60
+  gamma_strike_max_otm_steps: 2
+  gamma_strike_max_spread_pct: 0.8
   strike_from: current_atm        # current_atm = ATM at the moment of entry (2.0). anchor_atm = ATM when the
                                   # levels were last set, up to 20 min old (1.0 behaviour). OPERATOR DECISION.
   last_entry: "15:29"             # 2.0.4: superseded by closing_session.last_entry (kept in sync)

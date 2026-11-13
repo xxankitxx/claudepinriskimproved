@@ -105,7 +105,8 @@
   // lateness of the NIFTY tick stream vs the exchange clock (ws.exch_lag_s; feed_lag.lag_s as a fallback). null in replay.
   function lagSecs(s) { const w = s.ws, f = s.feed_lag; return w && isNum(w.exch_lag_s) ? Math.max(0, w.exch_lag_s) : (f && isNum(f.lag_s) ? Math.max(0, f.lag_s) : null); }
   function lagClosed(s) { return !!(s.feed_lag && s.feed_lag.closed === true); }
-  const WAIT = Object.assign(Object.create(null), { ENTRY_RETREATING: 1, REBUY_WAIT: 1, BREACH_TOO_DEEP: 1 });
+  const WAIT = Object.assign(Object.create(null), { ENTRY_RETREATING: 1, REBUY_WAIT: 1, BREACH_TOO_DEEP: 1,
+    GAMMA_CONFIRM_WAIT: 1, GAMMA_TOO_TIGHT: 1, RETRY_NEEDS_BREAK: 1 });   // 2.4 gamma-aware entry waits
   function waitGate(s) { const g = get(s.idle, 'gate', null); return g && WAIT[g] ? g : null; }
   // the plain-words reason for a wait gate, without the "WAIT" prefix (the engine's ready sentence wins)
   function waitWhy(s, gate) {
@@ -113,6 +114,9 @@
     if (typeof eb === 'string' && /^WAIT\b/i.test(eb)) { const t = eb.replace(/^WAIT\s*[-—–:]*\s*/i, ''); if (t) return t; }
     if (gate === 'REBUY_WAIT') { const rw = g.rebuy_wait; return 're-buy needs NIFTY ' + (rw && isNum(rw.beyond) ? (rw.dir === 'DOWN' ? 'below ' : rw.dir === 'UP' ? 'above ' : 'beyond ') + n0(rw.beyond) : "beyond the last trade's best price"); }
     if (gate === 'ENTRY_RETREATING') return 'NIFTY is moving away from the level';
+    if (gate === 'GAMMA_CONFIRM_WAIT') return 'low gamma — waiting for NIFTY to trade through the level';
+    if (gate === 'GAMMA_TOO_TIGHT') return 'the option\'s stop is only a few points away';
+    if (gate === 'RETRY_NEEDS_BREAK') return 'the last attempt on this side failed — waiting for the level to break';
     if (gate === 'BREACH_TOO_DEEP') return 'NIFTY is already far through the level' + (isNum(g.max_breach_pts) && g.max_breach_pts > 0 ? ' (more than ' + trim(g.max_breach_pts) + ' pts)' : '');
     return 'entry is waiting';
   }
@@ -278,7 +282,7 @@
 
   // 2.2 the quiet guards line: which entry guards are switched on; the one that is holding an entry right now lights up
   function rGuards(s) {
-    const g = s.guards, fl = s.feed_lag;
+    const g = s.guards, fl = s.feed_lag; rGamma(s);
     if ((!g || typeof g !== 'object') && (!fl || typeof fl !== 'object')) { show('guards', false); return; }
     const gate = get(s.idle, 'gate', null), out = [];
     const chip = (t, k, tip) => out.push('<span class="gchip' + (k ? ' ' + k : '') + '"' + (tip ? ' title="' + esc(tip) + '"' : '') + '>' + esc(t) + '</span>');
@@ -296,11 +300,39 @@
       }
       if (isNum(g.max_breach_pts) && g.max_breach_pts > 0) chip('max breach ' + trim(g.max_breach_pts) + ' pts', gate === 'BREACH_TOO_DEEP' ? 'on' : '', 'no entry once NIFTY is already more than ' + trim(g.max_breach_pts) + ' pts through the level');
     }
+    if (g && typeof g === 'object') {      // 2.4 gamma-aware entry rules
+      if (isNum(g.gamma_anticipate_max_arm_pts) && g.gamma_anticipate_max_arm_pts > 0) chip('low gamma waits for the break (> ' + trim(g.gamma_anticipate_max_arm_pts) + ' pts to arm)', gate === 'GAMMA_CONFIRM_WAIT' ? 'on' : '',
+        'when the option needs more than ' + trim(g.gamma_anticipate_max_arm_pts) + ' NIFTY points to arm the trail, the entry waits until NIFTY has traded ' + (isNum(g.gamma_confirm_breach_pts) ? trim(g.gamma_confirm_breach_pts) + ' pts ' : '') + 'through the level; with more gamma it still buys just before the level');
+      if (isNum(g.retry_confirm_secs) && g.retry_confirm_secs > 0) chip('retry after a failed attempt needs the break' + (g.retry_side ? ' (' + (g.retry_side === 'UP' ? '▲' : '▼') + ' active)' : ''), gate === 'RETRY_NEEDS_BREAK' ? 'on' : (g.retry_side ? 'armed' : ''),
+        'for ' + dur(g.retry_confirm_secs) + ' after a same-side trade that ended at the hard or protective stop, the next entry on that side waits until NIFTY has traded through the level');
+      if (isNum(g.gamma_min_arm_pts) && g.gamma_min_arm_pts > 0) chip('no entry under ' + trim(g.gamma_min_arm_pts) + ' pts to arm', gate === 'GAMMA_TOO_TIGHT' ? 'on' : '', 'an option that arms the trail in fewer NIFTY points than this has its stop inside ordinary noise');
+      if (g.strike_select === 'gamma') chip('strike: most gamma per rupee', '', 'the strike among ATM and the next out-of-the-money strikes with the most gamma per rupee of premium (delta, premium and spread permitting)');
+    }
     const be = g && typeof g === 'object' ? g.breakeven : null;
     if (be && typeof be === 'object' && isNum(be.arm_pct) && isNum(be.lock_pct)) { const P = v => (v >= 0 ? '+' : '−') + trim(Math.abs(v * 100)) + '%'; chip('protective stop ' + P(be.arm_pct) + ' → ' + P(be.lock_pct), '', 'once a trade has been up ' + P(be.arm_pct) + ', it is stopped out if the premium comes back to ' + P(be.lock_pct) + ' (exit reason: protective stop)'); }
     if (fl && isNum(fl.limit_s) && fl.limit_s > 0) chip('late-feed pause ' + trim(fl.limit_s) + ' s', fl.closed === true ? 'bad' : '', 'new entries pause while the NIFTY feed is more than ' + trim(fl.limit_s) + ' s behind the exchange');
     show('guards', true);
     html('guards-list', out.length ? out.join('') : '<span class="gchip off">none switched on</span>');
+  }
+
+  // 2.4 GAMMA line: the option the next entry would buy, and what it asks of the index
+  function rGamma(s) {
+    const g = s.gamma;
+    if (!g || typeof g !== 'object' || !isNum(g.strike) || !isNum(g.delta) || !isNum(g.gamma)) { show('gammaline', false); return; }
+    show('gammaline', true);
+    const conv = isNum(g.convexity) ? g.convexity : null;
+    const lvl = conv == null ? '' : conv >= 1.15 ? 'HIGH GAMMA' : conv >= 1.07 ? 'SOME GAMMA' : 'LOW GAMMA';
+    txt('gm-opt', K(g.strike) + ' ' + S(g.right) + (isNum(g.price) ? ' @ ' + n(g.price) : ''));
+    txt('gm-delta', 'delta ' + n(Math.abs(g.delta), 2));
+    txt('gm-gamma', 'gamma ' + n(g.gamma * 100, 3) + ' /100 pts');
+    txt('gm-arm', isNum(g.arm_pts) ? 'arms after ' + n(g.arm_pts, 0) + ' pts' : '');
+    txt('gm-stop', isNum(g.stop_pts) ? 'stop ' + n(g.stop_pts, 0) + ' pts away' : '');
+    txt('gm-iv', isNum(g.iv) ? 'IV ' + n(g.iv * 100, 1) + '%' : '');
+    txt('gm-level', lvl + (g.mode === 'confirm' ? ' · waits for the break' : g.mode === 'anticipate' ? ' · buys before the level' : ''));
+    cls('gm-level', 'gm-level ' + (conv == null ? '' : conv >= 1.15 ? 'hi' : conv >= 1.07 ? 'mid' : 'lo'));
+    attr('gammaline', 'title', 'the option the next entry on the nearer side would buy. delta: premium change per NIFTY point. gamma: how much delta grows per 100 points in our favour. ' +
+      'arms after N pts: NIFTY points needed for the +10% that arms the trail; stop N pts away: adverse points to the hard stop. ' +
+      (conv != null ? 'convexity ' + n(conv, 2) + ' = gain from a typical 10-minute move in our favour divided by the loss from the same move against us (1.00 = no gamma edge).' : ''));
   }
 
   function rHero(s) {
