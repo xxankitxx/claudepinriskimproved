@@ -12,6 +12,9 @@ recorded tick_tape reproduces decision_tape byte-for-byte (§11.5).
 
 from __future__ import annotations
 
+from . import VERSION as _VERSION_FULL
+_VERSION = _VERSION_FULL.rsplit(".", 1)[0]      # "2.4" -- shown in the dashboard footer
+
 import os
 import math
 import sys
@@ -224,7 +227,7 @@ class Orchestrator:
 
         # shared, read-only-ish snapshot for the dashboard.
         self.latest_state: dict = {"round_ts": None, "instruments": {}, "decision": None,
-                                   "position": None, "events": [], "version": "2.0",
+                                   "position": None, "events": [], "version": _VERSION,
                                    "boot_id": self._boot_id,
                                    "session_date": self.expiry.session_date.isoformat(),
                                    "expiry": {"date": self.expiry.expiry_date.isoformat(),
@@ -2307,7 +2310,7 @@ class Orchestrator:
             },
             "live_orders": self.cfg.live_orders,
             # ---- VAJRA 2.0 ----
-            "version": "2.0",
+            "version": _VERSION,
             "boot_id": self._boot_id,
             "regime": {**self.regime.as_dict(), "last_entry": self.entry_cutoff, "closing": self.closing.as_dict(),
                        "entries_today": self._entries_today},

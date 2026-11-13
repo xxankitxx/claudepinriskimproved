@@ -32,7 +32,7 @@ Top level:
 round_ts            int ms epoch of the engine round (null before 09:20 = PRE-OPEN; then `preopen_ts` ticks)
 preopen_ts          int ms (pre-open only)
 session_date        "2026-11-03"
-version             "2.0"            boot_id  "<pid>-<ms>" (changes on engine restart)
+version             "2.4"            boot_id  "<pid>-<ms>" (changes on engine restart)
 live_orders         bool             (always false = paper)
 nifty               {...}            the NIFTY headline (below)
 nifty_chain         [ {strike,is_atm,off,ce_ltp,ce_vwap,ce_oi,ce_vol,ce_bid,ce_ask,pe_ltp,pe_vwap,pe_oi,pe_vol,pe_bid,pe_ask} ]  ATM±6

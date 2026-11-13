@@ -49,6 +49,14 @@ There was almost no gamma to leverage that day.
 - End-of-day tape merge: runs at normal priority (a below-normal merge on a laptop at 100% CPU did not start
   for 12 minutes), retries for 15 minutes and logs why any parts remain. The start-of-day sweep stays low priority.
 
+**14 Nov follow-up (no rule or engine change).** Full suite rerun on the final code: 269 passed,
+3 skipped, completion gate green. The 13 Nov recording was replayed through the 2.4 app with the
+dashboard open: both morning trades came out exactly as live (09:46:31 25200 CE +1.3% protective stop;
+09:57:06 25250 CE -12.2% hard stop) and the GAMMA line showed the expected numbers. The start banner,
+browser tab and footer still said "VAJRA 2.0"; they now read the one `vajra.VERSION` (2.4.0).
+A paced replay cannot go faster than about 2.5x on this laptop whatever `--pace` says (each replayed
+round costs as much as a live one).
+
 # 2.3 — log sweep and speed (12 Nov 2026, evening)
 
 Sweep of every event tape, round tape, browser beacon and log since 19 Oct: no crash, round error, rejected

@@ -8,6 +8,8 @@ orchestrator (run_vajra.ps1 / orchestrator.sh) calls in here.
 
 from __future__ import annotations
 
+from . import VERSION as _VER
+
 import argparse
 import sys
 import threading
@@ -199,7 +201,7 @@ def run(config_path: str | None = None, mode: str | None = None,
     # Startup banner to the terminal (the operator watches this for an attended live run).
     poll = float(cfg.get("feed", "poll_interval_secs", default=1))
     dash_url = f"http://{cfg.server_host}:{cfg.server_port}" if want_dash else "(dashboard off)"
-    _say(f"⚡ VAJRA 2.0 {mode.upper()} | {session_date} | expiry {res.expiry_date} {res.basis_mode}"
+    _say(f"⚡ VAJRA {_VER} {mode.upper()} | {session_date} | expiry {res.expiry_date} {res.basis_mode}"
          f" | regime {orch.regime.name} (T-{orch.regime.dte_trading}, {orch.regime.band_method} band)"
          f" | last entry {orch.entry_cutoff} | square-off {orch.flatten_at} | runs to {orch.closing.session_close}"
          f" | cadence {poll:g}s | LIVE_ORDERS={cfg.live_orders} ({'!! LIVE ORDERS !!' if cfg.live_orders else 'paper'}) | {dash_url}")
@@ -581,7 +583,7 @@ def smoke_test(config_path: str | None, secs: int) -> int:
     _ct = resolve_closing(cfg, d, res.is_expiry_day)
     closed = (d != today) or datetime.now(tz=IST).strftime("%H:%M") >= _ct.session_close \
         or datetime.now(tz=IST).strftime("%H:%M") < "09:15"
-    _say(f"VAJRA 2.0 SMOKE | now {datetime.now(tz=IST):%Y-%m-%d %H:%M} IST | next session {d} | expiry {res.expiry_date} "
+    _say(f"VAJRA {_VER} SMOKE | now {datetime.now(tz=IST):%Y-%m-%d %H:%M} IST | next session {d} | expiry {res.expiry_date} "
          f"{res.basis_mode} | {'EXPIRY DAY' if res.is_expiry_day else 'non-expiry'} | market {'CLOSED' if closed else 'OPEN'} "
          f"| LIVE_ORDERS={cfg.live_orders} ({'!! LIVE !!' if cfg.live_orders else 'paper'})")
     ok = True

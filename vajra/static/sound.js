@@ -95,7 +95,7 @@ function _sndPill(){ const b=document.getElementById('sndbtn'), st=_sndState();
     bn.style.display=show?'block':'none';
     bn.textContent=st==='locked'?'🔒 SOUND IS LOCKED — click anywhere on this page to turn trade sounds on'+(_pendLocked.length?(' ('+_pendLocked.length+' missed cue'+(_pendLocked.length>1?'s':'')+' will play)'):''):
                    ('⚠ Sound file broken: '+Object.values(_bad).join(', ')+' — that cue CANNOT play. Check vajra/sounds/.'); }
-  const base='VAJRA 2.0', want=st==='locked'?'🔒 SOUND LOCKED · '+base:(st==='muted'?'🔇 SOUND OFF · '+base:(st==='bad'?'⚠ SOUND · '+base:base));
+  const base='VAJRA', want=st==='locked'?'🔒 SOUND LOCKED · '+base:(st==='muted'?'🔇 SOUND OFF · '+base:(st==='bad'?'⚠ SOUND · '+base:base));
   if(document.title!==want) document.title=want;
   if(_wasLocked!==null && _wasLocked!==_locked()) _beaconNow();
   _wasLocked=_locked(); }

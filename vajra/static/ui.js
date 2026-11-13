@@ -181,7 +181,7 @@
     const closeAt = atHM(clk, get(rg.closing, 'session_close', null));
     if (isNum(closeAt) && isNum(clk)) { const left = (closeAt - clk) / 1000; txt('clock-sub', left > 0 ? 'close in ' + dur(left) : 'closed ' + dur(-left) + ' ago'); cls('clock-sub', 'clock-sub' + (left > 0 && left < 900 ? ' warn' : '')); }
     else { txt('clock-sub', isNum(rt) ? 'close —' : 'pre-open'); cls('clock-sub', 'clock-sub'); }
-    txt('foot-ver', 'VAJRA ' + S(s.version || '2.0') + (s.boot_id ? ' · boot ' + S(s.boot_id) : ''));
+    txt('foot-ver', 'VAJRA ' + S(s.version || '') + (s.boot_id ? ' · boot ' + S(s.boot_id) : ''));
     txt('foot-round', isNum(get(s.round, 'proc_ms')) ? 'round ' + n(s.round.proc_ms, 1) + ' ms' : '');
     txt('foot-tape', s.tape_errors ? 'TAPE ERRORS ' + s.tape_errors : '');
   }

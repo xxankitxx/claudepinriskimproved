@@ -6,6 +6,12 @@
       "runtimeExecutable": "C:\\Users\\Ankit Madhogaria\\AppData\\Local\\Programs\\Python\\Python313\\python.exe",
       "runtimeArgs": ["-m", "vajra.app", "--mode", "replay", "--date", "2026-11-06", "--pace", "8", "--port", "8767"],
       "port": 8767
+    },
+    {
+      "name": "vajra-replay-13nov",
+      "runtimeExecutable": "C:\\Users\\Ankit Madhogaria\\AppData\\Local\\Programs\\Python\\Python313\\python.exe",
+      "runtimeArgs": ["-m", "vajra.app", "--mode", "replay", "--date", "2026-11-13", "--pace", "20", "--port", "8768"],
+      "port": 8768
     }
   ]
 }
